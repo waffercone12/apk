@@ -26,10 +26,9 @@ class VoiceAssistantService extends ChangeNotifier {
   String _currentResponse = '';
   double _confidence = 0.0;
 
-  // Gemini AI Configuration
-  static const String _geminiApiKey =
-      'AIzaSyAttKUwx_e82ExDmyIHVgK_YZM_ayjS52c'; // Replace with your API key
-  static const String _geminiApiUrl =
+  // Gemini AI Configuration - REPLACE WITH YOUR ACTUAL API KEY
+  static const String _geminiApiKey = 'AIzaSyAttKUwx_e82ExDmyIHVgK_YZM_ayjS52c';
+  static const String _geminiApiUrl = 
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent';
 
   // Voice settings
@@ -225,19 +224,19 @@ class VoiceAssistantService extends ChangeNotifier {
 
   // Handle speech recognition results
   void _onSpeechResult(SpeechRecognitionResult result) {
-  print('Speech result: \${result.recognizedWords} (confidence: \${result.confidence})');
-  _lastWords = result.recognizedWords;
-  _confidence = result.confidence;
-  notifyListeners();
+    print('Speech result: ${result.recognizedWords} (confidence: ${result.confidence})');
+    _lastWords = result.recognizedWords;
+    _confidence = result.confidence;
+    notifyListeners();
 
-  if (result.finalResult && result.confidence > 0.5) {
-    Timer(Duration(milliseconds: 500), () {
-      if (_isListening) {
-        stopListening();
-      }
-    });
+    if (result.finalResult && result.confidence > 0.5) {
+      Timer(Duration(milliseconds: 500), () {
+        if (_isListening) {
+          stopListening();
+        }
+      });
+    }
   }
-}
 
   // Handle speech recognition errors
   void _onSpeechError(stt.SpeechRecognitionError error) {
@@ -284,7 +283,7 @@ class VoiceAssistantService extends ChangeNotifier {
         print('AI Response: $response');
 
         // Speak the response
-        Future.microtask(() => _speakResponse(response));
+        await _speakResponse(response);
       } else {
         await _speakResponse('I\'m sorry, I couldn\'t process that request.');
       }
@@ -297,12 +296,11 @@ class VoiceAssistantService extends ChangeNotifier {
     }
   }
 
-  // Send command to Gemini AI
+  // Send command to Gemini AI - FIXED VERSION
   Future<String?> _sendToGemini(String prompt) async {
-  return await compute(_sendToGeminiWorker, prompt);
-    // If no API key is set, return a fallback response
-    if (_geminiApiKey == 'AIzaSyAttKUwx_e82ExDmyIHVgK_YZM_ayjS52c') {
-      print('Using fallback responses (replace with your Gemini API key)');
+    // Check if API key is set to placeholder value
+    if (_geminiApiKey == 'YOUR_ACTUAL_GEMINI_API_KEY_HERE' || _geminiApiKey.isEmpty) {
+      print('Using fallback responses (Please set your actual Gemini API key)');
       return _getFallbackResponse(prompt);
     }
 
@@ -343,33 +341,94 @@ Response:''';
           'topP': 0.95,
           'maxOutputTokens': 150,
         },
+        'safetySettings': [
+          {
+            'category': 'HARM_CATEGORY_HARASSMENT',
+            'threshold': 'BLOCK_MEDIUM_AND_ABOVE'
+          },
+          {
+            'category': 'HARM_CATEGORY_HATE_SPEECH',
+            'threshold': 'BLOCK_MEDIUM_AND_ABOVE'
+          },
+          {
+            'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+            'threshold': 'BLOCK_MEDIUM_AND_ABOVE'
+          },
+          {
+            'category': 'HARM_CATEGORY_DANGEROUS_CONTENT',
+            'threshold': 'BLOCK_MEDIUM_AND_ABOVE'
+          },
+        ],
       };
 
       final response = await http
           .post(
             Uri.parse('$_geminiApiUrl?key=$_geminiApiKey'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'BBBD-Voice-Assistant/1.0',
+            },
             body: json.encode(requestBody),
           )
-          .timeout(Duration(seconds: 10));
+          .timeout(Duration(seconds: 15)); // Increased timeout
+
+      print('Gemini API response status: ${response.statusCode}');
+      print('Gemini API response body: ${response.body}');
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
+        
+        // Check for errors in response
+        if (data['error'] != null) {
+          print('Gemini API error: ${data['error']}');
+          return _getFallbackResponse(prompt);
+        }
+
         final candidates = data['candidates'] as List?;
 
         if (candidates != null && candidates.isNotEmpty) {
-          final parts = candidates[0]['content']['parts'] as List?;
+          final candidate = candidates[0];
+          
+          // Check if candidate was blocked
+          if (candidate['finishReason'] == 'SAFETY') {
+            print('Response blocked by safety filters');
+            return _getFallbackResponse(prompt);
+          }
+
+          final parts = candidate['content']['parts'] as List?;
           if (parts != null && parts.isNotEmpty) {
             final aiResponse = parts[0]['text']?.toString().trim();
-            print('Gemini AI response received: $aiResponse');
-            return aiResponse;
+            if (aiResponse != null && aiResponse.isNotEmpty) {
+              print('Gemini AI response received successfully: $aiResponse');
+              return aiResponse;
+            }
           }
         }
       } else {
-        print('Gemini API error: ${response.statusCode} - ${response.body}');
+        print('Gemini API HTTP error: ${response.statusCode}');
+        print('Response body: ${response.body}');
+        
+        // Parse error for better debugging
+        try {
+          final errorData = json.decode(response.body);
+          if (errorData['error'] != null) {
+            print('API Error details: ${errorData['error']}');
+          }
+        } catch (e) {
+          print('Could not parse error response: $e');
+        }
       }
     } catch (e) {
-      print('Error calling Gemini API: $e');
+      print('Exception calling Gemini API: $e');
+      
+      // More specific error handling
+      if (e is TimeoutException) {
+        print('Request timed out - using fallback');
+      } else if (e is SocketException) {
+        print('Network error - using fallback');
+      } else {
+        print('Other error: ${e.runtimeType} - using fallback');
+      }
     }
 
     print('Falling back to local responses');
@@ -532,7 +591,7 @@ Response:''';
 
     _currentResponse = response;
     notifyListeners();
-    Future.microtask(() => _speakResponse(response));
+    await _speakResponse(response);
   }
 
   // Test voice output
@@ -605,9 +664,3 @@ Response:''';
 
 // Voice state enum
 enum VoiceState { idle, listening, processing, responding }
-String _sendToGeminiWorker(String prompt) {
-  // Simulate Gemini processing logic
-  // Move the Gemini API logic here from _sendToGemini
-  // For example purposes, return a dummy response
-  return 'Processed response for: \$prompt';
-}

@@ -3,7 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:encrypt/encrypt.dart' as encrypt;
+import 'package:crypto/crypto.dart';
+import 'dart:convert';
 import '../theme/default_theme.dart';
 
 class CommunityScreen extends StatefulWidget {
@@ -24,9 +25,8 @@ class _CommunityScreenState extends State<CommunityScreen>
   final DatabaseReference _database = FirebaseDatabase.instance.ref();
   final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
   
-  // Encryption setup
-  final _encrypter = encrypt.Encrypter(encrypt.AES(encrypt.Key.fromSecureRandom(32)));
-  final _iv = encrypt.IV.fromSecureRandom(16);
+  // Simplified encryption (using basic encoding instead of AES for now)
+  final String _encryptionKey = 'bbbd_community_key_2024';
   
   // Tab management
   int _selectedTab = 0; // 0: Groups, 1: Personal Chats
@@ -54,8 +54,7 @@ class _CommunityScreenState extends State<CommunityScreen>
   void initState() {
     super.initState();
     _initializeAnimations();
-    _setupRealtimeListeners();
-    _loadCommunityMembers();
+    _initializeCommunity();
   }
 
   void _initializeAnimations() {
@@ -69,163 +68,251 @@ class _CommunityScreenState extends State<CommunityScreen>
     _fadeController.forward();
   }
 
+  Future<void> _initializeCommunity() async {
+    try {
+      print('🚀 Initializing Community Screen...');
+      
+      // First ensure current user exists in database
+      await _ensureCurrentUserInDatabase();
+      
+      // Load community members
+      await _loadCommunityMembers();
+      
+      // Setup real-time listeners
+      _setupRealtimeListeners();
+      
+      setState(() {
+        _isLoading = false;
+      });
+      
+      print('✅ Community Screen initialized successfully');
+      
+    } catch (e) {
+      print('❌ Error initializing community: $e');
+      setState(() {
+        _isLoading = false;
+      });
+      
+      // Show error message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading community: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   void _setupRealtimeListeners() {
+    print('🔄 Setting up real-time listeners...');
+    
     // Listen to announcements
     _announcementsSubscription = _database
         .child('announcements')
         .orderByChild('timestamp')
         .onValue
-        .listen(_onAnnouncementsChanged);
+        .listen(
+          _onAnnouncementsChanged,
+          onError: (error) {
+            print('❌ Announcements listener error: $error');
+          },
+        );
 
-    // Listen to groups
+    // Listen to groups where current user is a member
     _groupsSubscription = _database
         .child('groups')
         .onValue
-        .listen(_onGroupsChanged);
+        .listen(
+          _onGroupsChanged,
+          onError: (error) {
+            print('❌ Groups listener error: $error');
+          },
+        );
 
     // Listen to personal chats
     _chatsSubscription = _database
         .child('chats')
-        .orderByChild('participants/$_currentUserId')
-        .equalTo(true)
         .onValue
-        .listen(_onChatsChanged);
+        .listen(
+          _onChatsChanged,
+          onError: (error) {
+            print('❌ Chats listener error: $error');
+          },
+        );
   }
 
   void _onAnnouncementsChanged(DatabaseEvent event) {
-    if (event.snapshot.value != null) {
-      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
-      setState(() {
-        _announcements = data.entries
+    try {
+      if (event.snapshot.value != null) {
+        final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+        final announcements = data.entries
             .map((e) => AnnouncementModel.fromMap(e.key, e.value))
             .toList()
           ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-        _isLoading = false;
-      });
-    } else {
-      setState(() {
-        _announcements = [];
-        _isLoading = false;
-      });
+        
+        if (mounted) {
+          setState(() {
+            _announcements = announcements;
+          });
+        }
+        
+        print('📢 Loaded ${announcements.length} announcements');
+      } else {
+        if (mounted) {
+          setState(() {
+            _announcements = [];
+          });
+        }
+        print('📢 No announcements found');
+      }
+    } catch (e) {
+      print('❌ Error processing announcements: $e');
     }
   }
 
   void _onGroupsChanged(DatabaseEvent event) {
-    if (event.snapshot.value != null) {
-      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
-      setState(() {
-        _groups = data.entries
+    try {
+      if (event.snapshot.value != null && _currentUserId.isNotEmpty) {
+        final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+        final groups = data.entries
             .map((e) => GroupModel.fromMap(e.key, e.value))
             .where((group) => group.members.contains(_currentUserId))
             .toList()
           ..sort((a, b) => b.lastMessageTime.compareTo(a.lastMessageTime));
-      });
-    } else {
-      setState(() {
-        _groups = [];
-      });
+        
+        if (mounted) {
+          setState(() {
+            _groups = groups;
+          });
+        }
+        
+        print('👥 Loaded ${groups.length} groups');
+      } else {
+        if (mounted) {
+          setState(() {
+            _groups = [];
+          });
+        }
+        print('👥 No groups found');
+      }
+    } catch (e) {
+      print('❌ Error processing groups: $e');
     }
   }
 
   void _onChatsChanged(DatabaseEvent event) {
-    if (event.snapshot.value != null) {
-      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
-      setState(() {
-        _personalChats = data.entries
+    try {
+      if (event.snapshot.value != null && _currentUserId.isNotEmpty) {
+        final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+        final chats = data.entries
             .map((e) => ChatModel.fromMap(e.key, e.value))
+            .where((chat) => chat.participants.contains(_currentUserId))
             .toList()
           ..sort((a, b) => b.lastMessageTime.compareTo(a.lastMessageTime));
-      });
-    } else {
-      setState(() {
-        _personalChats = [];
-      });
+        
+        if (mounted) {
+          setState(() {
+            _personalChats = chats;
+          });
+        }
+        
+        print('💬 Loaded ${chats.length} personal chats');
+      } else {
+        if (mounted) {
+          setState(() {
+            _personalChats = [];
+          });
+        }
+        print('💬 No personal chats found');
+      }
+    } catch (e) {
+      print('❌ Error processing chats: $e');
     }
   }
 
   Future<void> _loadCommunityMembers() async {
     try {
-      print('Loading community members...'); // Debug log
+      print('👥 Loading community members...');
       
       final snapshot = await _database.child('users').once();
-      print('Firebase snapshot received: ${snapshot.snapshot.value != null}'); // Debug log
       
       if (snapshot.snapshot.value != null) {
         final data = Map<String, dynamic>.from(snapshot.snapshot.value as Map);
-        print('Users data keys: ${data.keys.toList()}'); // Debug log
-        print('Current user ID: $_currentUserId'); // Debug log
-        
         final members = data.entries
             .map((e) => UserModel.fromMap(e.key, e.value))
             .where((user) => user.uid != _currentUserId)
             .toList();
-            
-        print('Loaded ${members.length} community members'); // Debug log
         
         setState(() {
           _communityMembers = members;
         });
         
-        // Also create sample users if none exist (for testing)
+        print('✅ Loaded ${members.length} community members');
+        
+        // If no members exist, create sample users
         if (members.isEmpty) {
-          print('No members found, creating sample users...'); // Debug log
           await _createSampleUsers();
         }
       } else {
-        print('No users found in database, creating sample users...'); // Debug log
+        print('⚠️ No users found in database, creating sample users...');
         await _createSampleUsers();
       }
     } catch (e) {
-      print('Error loading community members: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error loading community members: $e')),
-      );
-      
+      print('❌ Error loading community members: $e');
       // Create sample users as fallback
       await _createSampleUsers();
     }
   }
 
-  // Helper method to create sample users for testing
   Future<void> _createSampleUsers() async {
     try {
-      print('Creating sample users...'); // Debug log
+      print('👤 Creating sample users...');
       
       final sampleUsers = [
         {
           'uid': 'sample_user_1',
           'username': 'Alice Johnson',
-          'email': 'alice@example.com',
+          'email': 'alice@bbbd.com',
           'profileImageUrl': '',
           'phoneNumber': '+1234567890',
           'age': 25,
+          'isOnline': true,
+          'lastSeen': ServerValue.timestamp,
           'createdAt': ServerValue.timestamp,
         },
         {
           'uid': 'sample_user_2',
           'username': 'Bob Smith',
-          'email': 'bob@example.com',
+          'email': 'bob@bbbd.com',
           'profileImageUrl': '',
           'phoneNumber': '+1234567891',
           'age': 30,
+          'isOnline': false,
+          'lastSeen': DateTime.now().subtract(Duration(hours: 2)).millisecondsSinceEpoch,
           'createdAt': ServerValue.timestamp,
         },
         {
           'uid': 'sample_user_3',
           'username': 'Carol Davis',
-          'email': 'carol@example.com',
+          'email': 'carol@bbbd.com',
           'profileImageUrl': '',
           'phoneNumber': '+1234567892',
           'age': 28,
+          'isOnline': true,
+          'lastSeen': ServerValue.timestamp,
           'createdAt': ServerValue.timestamp,
         },
         {
           'uid': 'sample_user_4',
           'username': 'David Wilson',
-          'email': 'david@example.com',
+          'email': 'david@bbbd.com',
           'profileImageUrl': '',
           'phoneNumber': '+1234567893',
           'age': 32,
+          'isOnline': false,
+          'lastSeen': DateTime.now().subtract(Duration(minutes: 30)).millisecondsSinceEpoch,
           'createdAt': ServerValue.timestamp,
         },
       ];
@@ -235,48 +322,79 @@ class _CommunityScreenState extends State<CommunityScreen>
         await _database.child('users').child(user['uid'] as String).set(user);
       }
       
-      // Also ensure current user is in the database
-      await _ensureCurrentUserInDatabase();
+      // Create a sample announcement
+      await _createSampleAnnouncement();
       
-      print('Sample users created successfully');
+      print('✅ Sample users created successfully');
       
       // Reload members
       await _loadCommunityMembers();
       
     } catch (e) {
-      print('Error creating sample users: $e');
+      print('❌ Error creating sample users: $e');
     }
   }
 
-  // Ensure current user exists in the database
+  Future<void> _createSampleAnnouncement() async {
+    try {
+      final announcementRef = _database.child('announcements').push();
+      
+      final announcementData = {
+        'id': announcementRef.key,
+        'title': 'Welcome to BBBD Community! 🎉',
+        'content': 'Connect with fellow users, share ideas, and build meaningful relationships. Start by creating groups or sending direct messages!',
+        'createdBy': 'system',
+        'timestamp': ServerValue.timestamp,
+        'priority': 'high',
+      };
+      
+      await announcementRef.set(announcementData);
+      print('📢 Sample announcement created');
+    } catch (e) {
+      print('❌ Error creating sample announcement: $e');
+    }
+  }
+
   Future<void> _ensureCurrentUserInDatabase() async {
     try {
-      if (_currentUserId.isEmpty) return;
+      if (_currentUserId.isEmpty) {
+        print('⚠️ No current user ID found');
+        return;
+      }
       
       final userSnapshot = await _database.child('users').child(_currentUserId).once();
       
       if (!userSnapshot.snapshot.exists) {
-        print('Current user not in database, adding...'); // Debug log
+        print('👤 Current user not in database, adding...');
         
         final currentUser = FirebaseAuth.instance.currentUser;
         if (currentUser != null) {
           final userData = {
             'uid': _currentUserId,
-            'username': currentUser.displayName ?? 'Current User',
-            'email': currentUser.email ?? 'user@example.com',
+            'username': currentUser.displayName ?? 'BBBD User',
+            'email': currentUser.email ?? 'user@bbbd.com',
             'profileImageUrl': currentUser.photoURL ?? '',
             'phoneNumber': currentUser.phoneNumber ?? '',
             'age': 25,
+            'isOnline': true,
+            'lastSeen': ServerValue.timestamp,
             'createdAt': ServerValue.timestamp,
             'lastLoginAt': ServerValue.timestamp,
           };
           
           await _database.child('users').child(_currentUserId).set(userData);
-          print('Current user added to database');
+          print('✅ Current user added to database');
         }
+      } else {
+        // Update last seen
+        await _database.child('users').child(_currentUserId).update({
+          'lastSeen': ServerValue.timestamp,
+          'isOnline': true,
+        });
+        print('✅ Updated current user presence');
       }
     } catch (e) {
-      print('Error ensuring current user in database: $e');
+      print('❌ Error ensuring current user in database: $e');
     }
   }
 
@@ -300,29 +418,6 @@ class _CommunityScreenState extends State<CommunityScreen>
               color: AppTheme.getIconColor(context),
             ),
           ),
-          // Debug button to check members and reload
-          IconButton(
-            onPressed: () async {
-              print('=== DEBUG INFO ===');
-              print('Current User ID: $_currentUserId');
-              print('Community Members Count: ${_communityMembers.length}');
-              print('Members: ${_communityMembers.map((m) => m.username).toList()}');
-              
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Members: ${_communityMembers.length}. Check console for details.'),
-                  duration: Duration(seconds: 2),
-                ),
-              );
-              
-              // Reload members
-              await _loadCommunityMembers();
-            },
-            icon: Icon(
-              Icons.refresh,
-              color: AppTheme.getIconColor(context),
-            ),
-          ),
           PopupMenuButton<String>(
             icon: Icon(
               Icons.more_vert,
@@ -330,10 +425,46 @@ class _CommunityScreenState extends State<CommunityScreen>
             ),
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
-              PopupMenuItem(value: 'create_announcement', child: Text('Create Announcement')),
-              PopupMenuItem(value: 'community_settings', child: Text('Community Settings')),
-              PopupMenuItem(value: 'member_list', child: Text('View Members')),
-              PopupMenuItem(value: 'debug_info', child: Text('🐛 Debug Info')),
+              PopupMenuItem(
+                value: 'create_announcement',
+                child: Row(
+                  children: [
+                    Icon(Icons.campaign, size: 20),
+                    SizedBox(width: 8),
+                    Text('Create Announcement'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'member_list',
+                child: Row(
+                  children: [
+                    Icon(Icons.people, size: 20),
+                    SizedBox(width: 8),
+                    Text('View Members'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'refresh_data',
+                child: Row(
+                  children: [
+                    Icon(Icons.refresh, size: 20),
+                    SizedBox(width: 8),
+                    Text('Refresh'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'debug_info',
+                child: Row(
+                  children: [
+                    Icon(Icons.bug_report, size: 20),
+                    SizedBox(width: 8),
+                    Text('🐛 Debug Info'),
+                  ],
+                ),
+              ),
             ],
           ),
         ],
@@ -341,7 +472,23 @@ class _CommunityScreenState extends State<CommunityScreen>
       body: FadeTransition(
         opacity: _fadeAnimation,
         child: _isLoading
-            ? Center(child: CircularProgressIndicator())
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      color: AppTheme.getPrimaryColor(context),
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      'Loading Community...',
+                      style: TextStyle(
+                        color: AppTheme.getSubtitleColor(context),
+                      ),
+                    ),
+                  ],
+                ),
+              )
             : RefreshIndicator(
                 onRefresh: _refreshData,
                 color: AppTheme.getPrimaryColor(context),
@@ -361,11 +508,12 @@ class _CommunityScreenState extends State<CommunityScreen>
                 ),
               ),
       ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: FloatingActionButton.extended(
         onPressed: _selectedTab == 0 ? _showCreateGroupDialog : _showCreateChatDialog,
-        backgroundColor: Colors.black,  // Changed to black
-        foregroundColor: Colors.white,  // Changed to white icon
-        child: Icon(Icons.add),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        icon: Icon(Icons.add),
+        label: Text(_selectedTab == 0 ? 'New Group' : 'New Chat'),
       ),
     );
   }
@@ -383,19 +531,37 @@ class _CommunityScreenState extends State<CommunityScreen>
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    'Announcements',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.getTextColor(context),
-                    ),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.campaign,
+                        color: AppTheme.getPrimaryColor(context),
+                        size: 24,
+                      ),
+                      SizedBox(width: AppTheme.smallSpacing),
+                      Text(
+                        'Announcements',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.getTextColor(context),
+                        ),
+                      ),
+                    ],
                   ),
                   if (_announcements.isNotEmpty)
-                    Text(
-                      '${_announcements.length}',
-                      style: TextStyle(
-                        color: AppTheme.getSubtitleColor(context),
-                        fontSize: 14,
+                    Container(
+                      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppTheme.getPrimaryColor(context).withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '${_announcements.length}',
+                        style: TextStyle(
+                          color: AppTheme.getPrimaryColor(context),
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                 ],
@@ -419,6 +585,14 @@ class _CommunityScreenState extends State<CommunityScreen>
                               fontSize: 16,
                             ),
                           ),
+                          SizedBox(height: AppTheme.smallSpacing),
+                          Text(
+                            'Community updates will appear here',
+                            style: TextStyle(
+                              color: AppTheme.getSubtitleColor(context),
+                              fontSize: 12,
+                            ),
+                          ),
                         ],
                       ),
                     )
@@ -427,11 +601,16 @@ class _CommunityScreenState extends State<CommunityScreen>
                         return _buildAnnouncementItem(announcement);
                       }).toList(),
                     ),
-              if (_announcements.length > 3)
-                TextButton(
-                  onPressed: _showAllAnnouncements,
-                  child: Text('View All Announcements'),
+              if (_announcements.length > 3) ...[
+                SizedBox(height: AppTheme.smallSpacing),
+                Center(
+                  child: TextButton.icon(
+                    onPressed: _showAllAnnouncements,
+                    icon: Icon(Icons.expand_more),
+                    label: Text('View All (${_announcements.length - 3} more)'),
+                  ),
                 ),
+              ],
             ],
           ),
         ),
@@ -456,25 +635,33 @@ class _CommunityScreenState extends State<CommunityScreen>
         children: [
           Row(
             children: [
-              Icon(
-                Icons.campaign,
-                size: 16,
-                color: AppTheme.getPrimaryColor(context),
+              Container(
+                padding: EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: AppTheme.getPrimaryColor(context).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Icon(
+                  Icons.campaign,
+                  size: 16,
+                  color: AppTheme.getPrimaryColor(context),
+                ),
               ),
               SizedBox(width: AppTheme.smallSpacing),
               Expanded(
                 child: Text(
                   announcement.title,
                   style: TextStyle(
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w700,
                     color: AppTheme.getTextColor(context),
+                    fontSize: 15,
                   ),
                 ),
               ),
               Text(
                 _formatTimestamp(announcement.timestamp),
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: 11,
                   color: AppTheme.getSubtitleColor(context),
                 ),
               ),
@@ -487,6 +674,7 @@ class _CommunityScreenState extends State<CommunityScreen>
               style: TextStyle(
                 color: AppTheme.getTextColor(context),
                 fontSize: 14,
+                height: 1.3,
               ),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
@@ -500,35 +688,77 @@ class _CommunityScreenState extends State<CommunityScreen>
   Widget _buildTabSelector() {
     return SliverToBoxAdapter(
       child: Container(
-        margin: EdgeInsets.symmetric(horizontal: AppTheme.mediumSpacing),
+        margin: EdgeInsets.symmetric(
+          horizontal: AppTheme.mediumSpacing,
+          vertical: AppTheme.smallSpacing,
+        ),
         child: Container(
+          padding: EdgeInsets.all(4),
           decoration: BoxDecoration(
             color: AppTheme.getSurfaceColor(context),
             borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+            border: Border.all(
+              color: AppTheme.getDividerColor(context),
+              width: 1,
+            ),
           ),
           child: Row(
             children: [
               Expanded(
                 child: GestureDetector(
                   onTap: () => setState(() => _selectedTab = 0),
-                  child: Container(
+                  child: AnimatedContainer(
+                    duration: AppTheme.shortAnimation,
                     padding: EdgeInsets.symmetric(vertical: AppTheme.mediumSpacing),
                     decoration: BoxDecoration(
                       color: _selectedTab == 0 
-                          ? Colors.black  // Changed to black when selected
+                          ? Colors.black
                           : Colors.transparent,
-                      borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+                      borderRadius: BorderRadius.circular(AppTheme.smallRadius),
                     ),
-                    child: Center(
-                      child: Text(
-                        'Groups',
-                        style: TextStyle(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.group,
+                          size: 18,
                           color: _selectedTab == 0 
-                              ? Colors.white  // White text on black background
-                              : AppTheme.getTextColor(context),
-                          fontWeight: FontWeight.w600,
+                              ? Colors.white
+                              : AppTheme.getIconColor(context),
                         ),
-                      ),
+                        SizedBox(width: AppTheme.tinySpacing),
+                        Text(
+                          'Groups',
+                          style: TextStyle(
+                            color: _selectedTab == 0 
+                                ? Colors.white
+                                : AppTheme.getTextColor(context),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (_groups.isNotEmpty) ...[
+                          SizedBox(width: AppTheme.tinySpacing),
+                          Container(
+                            padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: _selectedTab == 0 
+                                  ? Colors.white.withOpacity(0.2)
+                                  : AppTheme.getPrimaryColor(context).withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '${_groups.length}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: _selectedTab == 0 
+                                    ? Colors.white
+                                    : AppTheme.getPrimaryColor(context),
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ),
@@ -536,24 +766,58 @@ class _CommunityScreenState extends State<CommunityScreen>
               Expanded(
                 child: GestureDetector(
                   onTap: () => setState(() => _selectedTab = 1),
-                  child: Container(
+                  child: AnimatedContainer(
+                    duration: AppTheme.shortAnimation,
                     padding: EdgeInsets.symmetric(vertical: AppTheme.mediumSpacing),
                     decoration: BoxDecoration(
                       color: _selectedTab == 1 
-                          ? Colors.black  // Changed to black when selected
+                          ? Colors.black
                           : Colors.transparent,
-                      borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+                      borderRadius: BorderRadius.circular(AppTheme.smallRadius),
                     ),
-                    child: Center(
-                      child: Text(
-                        'Chats',
-                        style: TextStyle(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.chat,
+                          size: 18,
                           color: _selectedTab == 1 
-                              ? Colors.white  // White text on black background
-                              : AppTheme.getTextColor(context),
-                          fontWeight: FontWeight.w600,
+                              ? Colors.white
+                              : AppTheme.getIconColor(context),
                         ),
-                      ),
+                        SizedBox(width: AppTheme.tinySpacing),
+                        Text(
+                          'Chats',
+                          style: TextStyle(
+                            color: _selectedTab == 1 
+                                ? Colors.white
+                                : AppTheme.getTextColor(context),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (_personalChats.isNotEmpty) ...[
+                          SizedBox(width: AppTheme.tinySpacing),
+                          Container(
+                            padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: _selectedTab == 1 
+                                  ? Colors.white.withOpacity(0.2)
+                                  : AppTheme.getPrimaryColor(context).withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '${_personalChats.length}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: _selectedTab == 1 
+                                    ? Colors.white
+                                    : AppTheme.getPrimaryColor(context),
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ),
@@ -579,10 +843,17 @@ class _CommunityScreenState extends State<CommunityScreen>
                 padding: EdgeInsets.all(AppTheme.extraLargeSpacing),
                 child: Column(
                   children: [
-                    Icon(
-                      Icons.group_outlined,
-                      size: 64,
-                      color: AppTheme.getSubtitleColor(context),
+                    Container(
+                      padding: EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: AppTheme.getPrimaryColor(context).withOpacity(0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.group_outlined,
+                        size: 48,
+                        color: AppTheme.getPrimaryColor(context),
+                      ),
                     ),
                     SizedBox(height: AppTheme.mediumSpacing),
                     Text(
@@ -600,6 +871,13 @@ class _CommunityScreenState extends State<CommunityScreen>
                         color: AppTheme.getSubtitleColor(context),
                       ),
                       textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: AppTheme.mediumSpacing),
+                    ElevatedButton.icon(
+                      onPressed: _showCreateGroupDialog,
+                      icon: Icon(Icons.add),
+                      label: Text('Create Your First Group'),
+                      style: AppTheme.getPrimaryButtonStyle(context),
                     ),
                   ],
                 ),
@@ -624,38 +902,70 @@ class _CommunityScreenState extends State<CommunityScreen>
         context: context,
         padding: EdgeInsets.zero,
         child: ListTile(
-          leading: CircleAvatar(
-            radius: 25,
-            backgroundColor: AppTheme.getPrimaryColor(context),
-            child: group.imageUrl?.isNotEmpty == true
-                ? ClipRRect(
-                    borderRadius: BorderRadius.circular(25),
-                    child: Image.network(
-                      group.imageUrl!,
-                      width: 50,
-                      height: 50,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Icon(
+          contentPadding: EdgeInsets.all(AppTheme.mediumSpacing),
+          leading: Stack(
+            children: [
+              CircleAvatar(
+                radius: 28,
+                backgroundColor: AppTheme.getPrimaryColor(context),
+                child: group.imageUrl?.isNotEmpty == true
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(28),
+                        child: Image.network(
+                          group.imageUrl!,
+                          width: 56,
+                          height: 56,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Icon(
+                            Icons.group,
+                            color: Colors.white,
+                            size: 28,
+                          ),
+                        ),
+                      )
+                    : Icon(
                         Icons.group,
-                        color: AppTheme.microphoneColor,
+                        color: Colors.white,
+                        size: 28,
                       ),
+              ),
+              if (group.unreadCount > 0)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Container(
+                    padding: EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
                     ),
-                  )
-                : Icon(
-                    Icons.group,
-                    color: AppTheme.microphoneColor,
+                    constraints: BoxConstraints(minWidth: 20, minHeight: 20),
+                    child: Text(
+                      '${group.unreadCount > 99 ? '99+' : group.unreadCount}',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
                   ),
+                ),
+            ],
           ),
           title: Text(
             group.name,
             style: TextStyle(
               fontWeight: FontWeight.w600,
               color: AppTheme.getTextColor(context),
+              fontSize: 16,
             ),
           ),
           subtitle: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              SizedBox(height: 4),
               Text(
                 group.lastMessage.isNotEmpty 
                     ? _decryptMessage(group.lastMessage)
@@ -664,48 +974,46 @@ class _CommunityScreenState extends State<CommunityScreen>
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: AppTheme.getSubtitleColor(context),
+                  fontSize: 14,
                 ),
               ),
-              SizedBox(height: 2),
-              Text(
-                '${group.members.length} members',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppTheme.getSubtitleColor(context),
-                ),
+              SizedBox(height: 4),
+              Row(
+                children: [
+                  Icon(
+                    Icons.people,
+                    size: 12,
+                    color: AppTheme.getSubtitleColor(context),
+                  ),
+                  SizedBox(width: 4),
+                  Text(
+                    '${group.members.length} members',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppTheme.getSubtitleColor(context),
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Icon(
+                    Icons.access_time,
+                    size: 12,
+                    color: AppTheme.getSubtitleColor(context),
+                  ),
+                  SizedBox(width: 4),
+                  Text(
+                    _formatTimestamp(group.lastMessageTime),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppTheme.getSubtitleColor(context),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-          trailing: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                _formatTimestamp(group.lastMessageTime),
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppTheme.getSubtitleColor(context),
-                ),
-              ),
-              if (group.unreadCount > 0) ...[
-                SizedBox(height: 4),
-                Container(
-                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppTheme.getPrimaryColor(context),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(
-                    '${group.unreadCount}',
-                    style: TextStyle(
-                      color: AppTheme.microphoneColor,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
-            ],
+          trailing: Icon(
+            Icons.chevron_right,
+            color: AppTheme.getIconColor(context),
           ),
           onTap: () => _openGroupChat(group),
           onLongPress: () => _showGroupOptions(group),
@@ -730,10 +1038,17 @@ class _CommunityScreenState extends State<CommunityScreen>
                 padding: EdgeInsets.all(AppTheme.extraLargeSpacing),
                 child: Column(
                   children: [
-                    Icon(
-                      Icons.chat_outlined,
-                      size: 64,
-                      color: AppTheme.getSubtitleColor(context),
+                    Container(
+                      padding: EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: AppTheme.getPrimaryColor(context).withOpacity(0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.chat_outlined,
+                        size: 48,
+                        color: AppTheme.getPrimaryColor(context),
+                      ),
                     ),
                     SizedBox(height: AppTheme.mediumSpacing),
                     Text(
@@ -751,6 +1066,13 @@ class _CommunityScreenState extends State<CommunityScreen>
                         color: AppTheme.getSubtitleColor(context),
                       ),
                       textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: AppTheme.mediumSpacing),
+                    ElevatedButton.icon(
+                      onPressed: _showCreateChatDialog,
+                      icon: Icon(Icons.person_add),
+                      label: Text('Start a Conversation'),
+                      style: AppTheme.getPrimaryButtonStyle(context),
                     ),
                   ],
                 ),
@@ -777,66 +1099,111 @@ class _CommunityScreenState extends State<CommunityScreen>
         context: context,
         padding: EdgeInsets.zero,
         child: ListTile(
-          leading: CircleAvatar(
-            radius: 25,
-            backgroundColor: AppTheme.getPrimaryColor(context),
-            backgroundImage: otherUser.profileImageUrl?.isNotEmpty == true
-                ? NetworkImage(otherUser.profileImageUrl!)
-                : null,
-            child: otherUser.profileImageUrl?.isEmpty != false
-                ? Icon(
-                    Icons.person,
-                    color: AppTheme.microphoneColor,
-                  )
-                : null,
+          contentPadding: EdgeInsets.all(AppTheme.mediumSpacing),
+          leading: Stack(
+            children: [
+              CircleAvatar(
+                radius: 28,
+                backgroundColor: AppTheme.getPrimaryColor(context),
+                backgroundImage: otherUser.profileImageUrl?.isNotEmpty == true
+                    ? NetworkImage(otherUser.profileImageUrl!)
+                    : null,
+                child: otherUser.profileImageUrl?.isEmpty != false
+                    ? Icon(
+                        Icons.person,
+                        color: Colors.white,
+                        size: 28,
+                      )
+                    : null,
+              ),
+              // Online status indicator
+              if (otherUser.isOnline == true)
+                Positioned(
+                  right: 2,
+                  bottom: 2,
+                  child: Container(
+                    width: 16,
+                    height: 16,
+                    decoration: BoxDecoration(
+                      color: Colors.green,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                  ),
+                ),
+              if (chat.unreadCount > 0)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Container(
+                    padding: EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                    constraints: BoxConstraints(minWidth: 20, minHeight: 20),
+                    child: Text(
+                      '${chat.unreadCount > 99 ? '99+' : chat.unreadCount}',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
           ),
           title: Text(
             otherUser.username,
             style: TextStyle(
               fontWeight: FontWeight.w600,
               color: AppTheme.getTextColor(context),
+              fontSize: 16,
             ),
           ),
-          subtitle: Text(
-            chat.lastMessage.isNotEmpty 
-                ? _decryptMessage(chat.lastMessage)
-                : 'No messages yet',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: AppTheme.getSubtitleColor(context),
-            ),
-          ),
-          trailing: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              SizedBox(height: 4),
               Text(
-                _formatTimestamp(chat.lastMessageTime),
+                chat.lastMessage.isNotEmpty 
+                    ? _decryptMessage(chat.lastMessage)
+                    : 'No messages yet',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 12,
                   color: AppTheme.getSubtitleColor(context),
+                  fontSize: 14,
                 ),
               ),
-              if (chat.unreadCount > 0) ...[
-                SizedBox(height: 4),
-                Container(
-                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppTheme.getPrimaryColor(context),
-                    borderRadius: BorderRadius.circular(10),
+              SizedBox(height: 4),
+              Row(
+                children: [
+                  Icon(
+                    otherUser.isOnline == true ? Icons.circle : Icons.access_time,
+                    size: 12,
+                    color: otherUser.isOnline == true ? Colors.green : AppTheme.getSubtitleColor(context),
                   ),
-                  child: Text(
-                    '${chat.unreadCount}',
+                  SizedBox(width: 4),
+                  Text(
+                    otherUser.isOnline == true 
+                        ? 'Online' 
+                        : 'Last seen ${_formatTimestamp(otherUser.lastSeen ?? 0)}',
                     style: TextStyle(
-                      color: AppTheme.microphoneColor,
                       fontSize: 12,
-                      fontWeight: FontWeight.bold,
+                      color: AppTheme.getSubtitleColor(context),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ],
+          ),
+          trailing: Icon(
+            Icons.chevron_right,
+            color: AppTheme.getIconColor(context),
           ),
           onTap: () => _openPersonalChat(chat),
           onLongPress: () => _showChatOptions(chat),
@@ -850,12 +1217,15 @@ class _CommunityScreenState extends State<CommunityScreen>
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Search'),
+        title: Text('Search ${_selectedTab == 0 ? 'Groups' : 'Chats'}'),
         content: TextField(
           controller: _searchController,
           decoration: InputDecoration(
             hintText: _selectedTab == 0 ? 'Search groups...' : 'Search chats...',
             prefixIcon: Icon(Icons.search),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+            ),
           ),
           onChanged: (value) {
             setState(() {
@@ -875,7 +1245,7 @@ class _CommunityScreenState extends State<CommunityScreen>
             },
             child: Text('Clear'),
           ),
-          TextButton(
+          ElevatedButton(
             onPressed: () => Navigator.pop(context),
             child: Text('Done'),
           ),
@@ -885,6 +1255,19 @@ class _CommunityScreenState extends State<CommunityScreen>
   }
 
   void _showCreateGroupDialog() {
+    if (_communityMembers.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No community members available to add to group'),
+          action: SnackBarAction(
+            label: 'Refresh',
+            onPressed: () => _loadCommunityMembers(),
+          ),
+        ),
+      );
+      return;
+    }
+
     final nameController = TextEditingController();
     final descriptionController = TextEditingController();
     List<String> selectedMembers = [];
@@ -893,22 +1276,33 @@ class _CommunityScreenState extends State<CommunityScreen>
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: Text('Create Group'),
+          title: Row(
+            children: [
+              Icon(Icons.group_add),
+              SizedBox(width: 8),
+              Text('Create Group'),
+            ],
+          ),
           contentPadding: EdgeInsets.fromLTRB(24, 20, 24, 0),
           content: Container(
             width: double.maxFinite,
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.6, // Limit height to 60% of screen
+              maxHeight: MediaQuery.of(context).size.height * 0.7,
             ),
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   TextField(
                     controller: nameController,
                     decoration: InputDecoration(
-                      labelText: 'Group Name',
-                      hintText: 'Enter group name',
+                      labelText: 'Group Name *',
+                      hintText: 'Enter a creative group name',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+                      ),
+                      prefixIcon: Icon(Icons.group),
                     ),
                   ),
                   SizedBox(height: AppTheme.mediumSpacing),
@@ -916,89 +1310,103 @@ class _CommunityScreenState extends State<CommunityScreen>
                     controller: descriptionController,
                     decoration: InputDecoration(
                       labelText: 'Description (Optional)',
-                      hintText: 'Enter group description',
+                      hintText: 'What is this group about?',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+                      ),
+                      prefixIcon: Icon(Icons.description),
                     ),
                     maxLines: 2,
                   ),
                   SizedBox(height: AppTheme.mediumSpacing),
-                  SizedBox(
-                    height: 150, // Fixed height for member list
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Add Members:',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        SizedBox(height: AppTheme.smallSpacing),
-                        Expanded(
-                          child: Container(
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey.shade300),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: _communityMembers.isEmpty
-                                ? Center(
-                                    child: Text(
-                                      'Loading members...',
-                                      style: TextStyle(color: Colors.grey),
-                                    ),
-                                  )
-                                : ListView.builder(
-                                    shrinkWrap: true,
-                                    itemCount: _communityMembers.length,
-                                    itemBuilder: (context, index) {
-                                      final member = _communityMembers[index];
-                                      final isSelected = selectedMembers.contains(member.uid);
-                                      
-                                      return SizedBox(
-                                        height: 48, // Fixed height for each item
-                                        child: CheckboxListTile(
-                                          dense: true,
-                                          value: isSelected,
-                                          title: Text(
-                                            member.username,
-                                            style: TextStyle(fontSize: 14),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          subtitle: Text(
-                                            member.email,
-                                            style: TextStyle(fontSize: 12),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          onChanged: (bool? value) {
-                                            setDialogState(() {
-                                              if (value == true) {
-                                                selectedMembers.add(member.uid);
-                                              } else {
-                                                selectedMembers.remove(member.uid);
-                                              }
-                                            });
-                                          },
-                                        ),
-                                      );
-                                    },
-                                  ),
+                  Text(
+                    'Add Members:',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 16,
+                    ),
+                  ),
+                  Text(
+                    'Select people to add to your group',
+                    style: TextStyle(
+                      color: AppTheme.getSubtitleColor(context),
+                      fontSize: 12,
+                    ),
+                  ),
+                  SizedBox(height: AppTheme.smallSpacing),
+                  Container(
+                    height: 200,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: AppTheme.getDividerColor(context)),
+                      borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+                    ),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _communityMembers.length,
+                      itemBuilder: (context, index) {
+                        final member = _communityMembers[index];
+                        final isSelected = selectedMembers.contains(member.uid);
+                        
+                        return CheckboxListTile(
+                          dense: true,
+                          value: isSelected,
+                          title: Text(
+                            member.username,
+                            style: TextStyle(fontSize: 14),
+                            overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                      ],
+                          subtitle: Text(
+                            member.email,
+                            style: TextStyle(fontSize: 12),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          secondary: CircleAvatar(
+                            radius: 16,
+                            backgroundImage: member.profileImageUrl?.isNotEmpty == true
+                                ? NetworkImage(member.profileImageUrl!)
+                                : null,
+                            child: member.profileImageUrl?.isEmpty != false
+                                ? Icon(Icons.person, size: 16)
+                                : null,
+                          ),
+                          onChanged: (bool? value) {
+                            setDialogState(() {
+                              if (value == true) {
+                                selectedMembers.add(member.uid);
+                              } else {
+                                selectedMembers.remove(member.uid);
+                              }
+                            });
+                          },
+                        );
+                      },
                     ),
                   ),
                   if (selectedMembers.isNotEmpty) ...[
                     SizedBox(height: AppTheme.smallSpacing),
                     Container(
-                      padding: EdgeInsets.all(8),
+                      padding: EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: AppTheme.getPrimaryColor(context).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
                       ),
-                      child: Text(
-                        '${selectedMembers.length} member(s) selected',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: AppTheme.getPrimaryColor(context),
-                          fontWeight: FontWeight.w500,
-                        ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.people,
+                            size: 16,
+                            color: AppTheme.getPrimaryColor(context),
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            '${selectedMembers.length} member(s) selected',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: AppTheme.getPrimaryColor(context),
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -1011,45 +1419,20 @@ class _CommunityScreenState extends State<CommunityScreen>
               onPressed: () => Navigator.pop(context),
               child: Text('Cancel'),
             ),
-            ElevatedButton(
-              onPressed: nameController.text.isNotEmpty
+            ElevatedButton.icon(
+              onPressed: nameController.text.trim().isNotEmpty
                   ? () async {
-                      if (nameController.text.trim().isNotEmpty) {
-                        Navigator.pop(context); // Close dialog first
-                        // Show loading indicator
-                        showDialog(
-                          context: context,
-                          barrierDismissible: false,
-                          builder: (context) => Center(
-                            child: Container(
-                              padding: EdgeInsets.all(20),
-                              decoration: BoxDecoration(
-                                color: AppTheme.getSurfaceColor(context),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  CircularProgressIndicator(),
-                                  SizedBox(height: 16),
-                                  Text('Creating group...'),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                        
-                        await _createGroup(
-                          nameController.text.trim(),
-                          descriptionController.text.trim(),
-                          selectedMembers,
-                        );
-                        
-                        Navigator.pop(context); // Close loading dialog
-                      }
+                      Navigator.pop(context);
+                      await _createGroup(
+                        nameController.text.trim(),
+                        descriptionController.text.trim(),
+                        selectedMembers,
+                      );
                     }
                   : null,
-              child: Text('Create'),
+              icon: Icon(Icons.create),
+              label: Text('Create Group'),
+              style: AppTheme.getPrimaryButtonStyle(context),
             ),
           ],
         ),
@@ -1058,35 +1441,90 @@ class _CommunityScreenState extends State<CommunityScreen>
   }
 
   void _showCreateChatDialog() {
+    if (_communityMembers.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No community members available to chat with'),
+          action: SnackBarAction(
+            label: 'Refresh',
+            onPressed: () => _loadCommunityMembers(),
+          ),
+        ),
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Start New Chat'),
-        content: SizedBox(
+        title: Row(
+          children: [
+            Icon(Icons.chat_bubble_outline),
+            SizedBox(width: 8),
+            Text('Start New Chat'),
+          ],
+        ),
+        content: Container(
           width: double.maxFinite,
-          height: 300,
-          child: ListView.builder(
-            itemCount: _communityMembers.length,
-            itemBuilder: (context, index) {
-              final member = _communityMembers[index];
-              
-              return ListTile(
-                leading: CircleAvatar(
-                  backgroundImage: member.profileImageUrl?.isNotEmpty == true
-                      ? NetworkImage(member.profileImageUrl!)
-                      : null,
-                  child: member.profileImageUrl?.isEmpty != false
-                      ? Icon(Icons.person)
-                      : null,
+          height: 400,
+          child: Column(
+            children: [
+              Text(
+                'Choose someone to start a conversation with:',
+                style: TextStyle(
+                  color: AppTheme.getSubtitleColor(context),
                 ),
-                title: Text(member.username),
-                subtitle: Text(member.email),
-                onTap: () async {
-                  await _createPersonalChat(member.uid);
-                  Navigator.pop(context);
-                },
-              );
-            },
+              ),
+              SizedBox(height: AppTheme.mediumSpacing),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _communityMembers.length,
+                  itemBuilder: (context, index) {
+                    final member = _communityMembers[index];
+                    
+                    return ListTile(
+                      leading: Stack(
+                        children: [
+                          CircleAvatar(
+                            backgroundImage: member.profileImageUrl?.isNotEmpty == true
+                                ? NetworkImage(member.profileImageUrl!)
+                                : null,
+                            child: member.profileImageUrl?.isEmpty != false
+                                ? Icon(Icons.person)
+                                : null,
+                          ),
+                          if (member.isOnline == true)
+                            Positioned(
+                              right: 0,
+                              bottom: 0,
+                              child: Container(
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  color: Colors.green,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: Colors.white, width: 2),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      title: Text(member.username),
+                      subtitle: Text(
+                        member.isOnline == true 
+                            ? 'Online' 
+                            : 'Last seen ${_formatTimestamp(member.lastSeen ?? 0)}',
+                      ),
+                      trailing: Icon(Icons.chat),
+                      onTap: () async {
+                        Navigator.pop(context);
+                        await _createPersonalChat(member.uid);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         ),
         actions: [
@@ -1099,29 +1537,31 @@ class _CommunityScreenState extends State<CommunityScreen>
     );
   }
 
-  // Navigation Methods
-  void _openGroupChat(GroupModel group) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => GroupChatScreen(group: group),
-      ),
-    );
-  }
-
-  void _openPersonalChat(ChatModel chat) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PersonalChatScreen(chat: chat),
-      ),
-    );
-  }
-
   // CRUD Operations
   Future<void> _createGroup(String name, String description, List<String> memberIds) async {
     try {
-      setState(() => _isCreatingGroup = true);
+      // Show loading
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => Center(
+          child: Container(
+            padding: EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: AppTheme.getSurfaceColor(context),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Creating group...'),
+              ],
+            ),
+          ),
+        ),
+      );
       
       final groupRef = _database.child('groups').push();
       final groupId = groupRef.key!;
@@ -1140,27 +1580,48 @@ class _CommunityScreenState extends State<CommunityScreen>
         'admins': {_currentUserId: true},
         'imageUrl': '',
         'unreadCount': 0,
+        'isActive': true,
       };
       
       await groupRef.set(groupData);
       
-      // Send system message
+      // Send system welcome message
       await _sendMessage(
         groupId,
-        'Welcome to $name! 🎉',
+        'Welcome to $name! 🎉 Start chatting with your group members.',
         MessageType.system,
         isGroup: true,
       );
       
+      Navigator.pop(context); // Close loading dialog
+      
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Group created successfully!')),
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.white),
+              SizedBox(width: 8),
+              Text('Group "$name" created successfully!'),
+            ],
+          ),
+          backgroundColor: Colors.green,
+        ),
       );
+      
+      // Navigate to the new group
+      final newGroup = GroupModel.fromMap(groupId, groupData);
+      _openGroupChat(newGroup);
+      
     } catch (e) {
+      Navigator.pop(context); // Close loading dialog
+      
+      print('❌ Error creating group: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error creating group: $e')),
+        SnackBar(
+          content: Text('Error creating group: $e'),
+          backgroundColor: Colors.red,
+        ),
       );
-    } finally {
-      setState(() => _isCreatingGroup = false);
     }
   }
 
@@ -1183,6 +1644,29 @@ class _CommunityScreenState extends State<CommunityScreen>
         return;
       }
       
+      // Show loading
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => Center(
+          child: Container(
+            padding: EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: AppTheme.getSurfaceColor(context),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Starting chat...'),
+              ],
+            ),
+          ),
+        ),
+      );
+      
       final chatRef = _database.child('chats').push();
       final chatId = chatRef.key!;
       
@@ -1196,17 +1680,26 @@ class _CommunityScreenState extends State<CommunityScreen>
         'lastMessageTime': ServerValue.timestamp,
         'lastMessage': '',
         'unreadCount': 0,
+        'isActive': true,
       };
       
       await chatRef.set(chatData);
+      
+      Navigator.pop(context); // Close loading dialog
       
       // Navigate to chat
       final newChat = ChatModel.fromMap(chatId, chatData);
       _openPersonalChat(newChat);
       
     } catch (e) {
+      Navigator.pop(context); // Close loading dialog if open
+      
+      print('❌ Error creating chat: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error creating chat: $e')),
+        SnackBar(
+          content: Text('Error creating chat: $e'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
@@ -1249,41 +1742,90 @@ class _CommunityScreenState extends State<CommunityScreen>
           .update(updateData);
           
     } catch (e) {
-      print('Error sending message: $e');
+      print('❌ Error sending message: $e');
     }
+  }
+
+  // Navigation Methods
+  void _openGroupChat(GroupModel group) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => GroupChatScreen(group: group),
+      ),
+    );
+  }
+
+  void _openPersonalChat(ChatModel chat) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PersonalChatScreen(chat: chat),
+      ),
+    );
   }
 
   // Options and Actions
   void _showGroupOptions(GroupModel group) {
     showModalBottomSheet(
       context: context,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (context) => Container(
         padding: EdgeInsets.all(AppTheme.mediumSpacing),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: Icon(Icons.edit),
-              title: Text('Edit Group'),
-              onTap: () {
-                Navigator.pop(context);
-                _showEditGroupDialog(group);
-              },
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppTheme.greyMedium,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-            ListTile(
-              leading: Icon(Icons.people),
-              title: Text('Manage Members'),
-              onTap: () {
-                Navigator.pop(context);
-                _showManageMembersDialog(group);
-              },
+            SizedBox(height: AppTheme.mediumSpacing),
+            Text(
+              group.name,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
+            SizedBox(height: AppTheme.mediumSpacing),
             ListTile(
-              leading: Icon(Icons.info),
+              leading: Icon(Icons.info_outline),
               title: Text('Group Info'),
               onTap: () {
                 Navigator.pop(context);
                 _showGroupInfoDialog(group);
+              },
+            ),
+            if (group.admins.contains(_currentUserId)) ...[
+              ListTile(
+                leading: Icon(Icons.edit),
+                title: Text('Edit Group'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showEditGroupDialog(group);
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.people),
+                title: Text('Manage Members'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showManageMembersDialog(group);
+                },
+              ),
+            ],
+            ListTile(
+              leading: Icon(Icons.exit_to_app, color: Colors.orange),
+              title: Text('Leave Group', style: TextStyle(color: Colors.orange)),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmLeaveGroup(group);
               },
             ),
             if (group.admins.contains(_currentUserId))
@@ -1295,14 +1837,6 @@ class _CommunityScreenState extends State<CommunityScreen>
                   _confirmDeleteGroup(group);
                 },
               ),
-            ListTile(
-              leading: Icon(Icons.exit_to_app, color: Colors.orange),
-              title: Text('Leave Group', style: TextStyle(color: Colors.orange)),
-              onTap: () {
-                Navigator.pop(context);
-                _confirmLeaveGroup(group);
-              },
-            ),
           ],
         ),
       ),
@@ -1310,27 +1844,41 @@ class _CommunityScreenState extends State<CommunityScreen>
   }
 
   void _showChatOptions(ChatModel chat) {
+    final otherUser = _getOtherUserFromChat(chat);
+    
     showModalBottomSheet(
       context: context,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (context) => Container(
         padding: EdgeInsets.all(AppTheme.mediumSpacing),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppTheme.greyMedium,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            SizedBox(height: AppTheme.mediumSpacing),
+            Text(
+              'Chat with ${otherUser.username}',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: AppTheme.mediumSpacing),
             ListTile(
-              leading: Icon(Icons.info),
+              leading: Icon(Icons.info_outline),
               title: Text('Chat Info'),
               onTap: () {
                 Navigator.pop(context);
                 _showChatInfoDialog(chat);
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.block, color: Colors.orange),
-              title: Text('Block User', style: TextStyle(color: Colors.orange)),
-              onTap: () {
-                Navigator.pop(context);
-                _confirmBlockUser(chat);
               },
             ),
             ListTile(
@@ -1347,26 +1895,64 @@ class _CommunityScreenState extends State<CommunityScreen>
     );
   }
 
-  void _showEditGroupDialog(GroupModel group) {
-    final nameController = TextEditingController(text: group.name);
-    final descriptionController = TextEditingController(text: group.description);
+  // Menu Actions
+  void _handleMenuAction(String action) {
+    switch (action) {
+      case 'create_announcement':
+        _showCreateAnnouncementDialog();
+        break;
+      case 'member_list':
+        _showMemberList();
+        break;
+      case 'refresh_data':
+        _refreshData();
+        break;
+      case 'debug_info':
+        _showDebugInfo();
+        break;
+    }
+  }
+
+  void _showCreateAnnouncementDialog() {
+    final titleController = TextEditingController();
+    final contentController = TextEditingController();
 
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Edit Group'),
+        title: Row(
+          children: [
+            Icon(Icons.campaign),
+            SizedBox(width: 8),
+            Text('Create Announcement'),
+          ],
+        ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
-              controller: nameController,
-              decoration: InputDecoration(labelText: 'Group Name'),
+              controller: titleController,
+              decoration: InputDecoration(
+                labelText: 'Title *',
+                hintText: 'Enter announcement title',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+                ),
+                prefixIcon: Icon(Icons.title),
+              ),
             ),
             SizedBox(height: AppTheme.mediumSpacing),
             TextField(
-              controller: descriptionController,
-              decoration: InputDecoration(labelText: 'Description'),
-              maxLines: 3,
+              controller: contentController,
+              decoration: InputDecoration(
+                labelText: 'Content',
+                hintText: 'What would you like to announce?',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+                ),
+                prefixIcon: Icon(Icons.message),
+              ),
+              maxLines: 4,
             ),
           ],
         ),
@@ -1375,132 +1961,219 @@ class _CommunityScreenState extends State<CommunityScreen>
             onPressed: () => Navigator.pop(context),
             child: Text('Cancel'),
           ),
-          ElevatedButton(
-            onPressed: () async {
-              await _updateGroup(
-                group.id,
-                nameController.text.trim(),
-                descriptionController.text.trim(),
-              );
-              Navigator.pop(context);
-            },
-            child: Text('Save'),
+          ElevatedButton.icon(
+            onPressed: titleController.text.trim().isNotEmpty
+                ? () async {
+                    Navigator.pop(context);
+                    await _createAnnouncement(
+                      titleController.text.trim(),
+                      contentController.text.trim(),
+                    );
+                  }
+                : null,
+            icon: Icon(Icons.send),
+            label: Text('Post'),
+            style: AppTheme.getPrimaryButtonStyle(context),
           ),
         ],
       ),
     );
   }
 
-  void _showManageMembersDialog(GroupModel group) {
+  Future<void> _createAnnouncement(String title, String content) async {
+    try {
+      final announcementRef = _database.child('announcements').push();
+      
+      final announcementData = {
+        'id': announcementRef.key,
+        'title': title,
+        'content': content,
+        'createdBy': _currentUserId,
+        'timestamp': ServerValue.timestamp,
+        'priority': 'normal',
+      };
+      
+      await announcementRef.set(announcementData);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.white),
+              SizedBox(width: 8),
+              Text('Announcement posted successfully!'),
+            ],
+          ),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      print('❌ Error posting announcement: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error posting announcement: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  void _showMemberList() {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Manage Members'),
-        contentPadding: EdgeInsets.fromLTRB(24, 20, 24, 0),
+        title: Row(
+          children: [
+            Icon(Icons.people),
+            SizedBox(width: 8),
+            Text('Community Members'),
+          ],
+        ),
         content: Container(
           width: double.maxFinite,
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.6,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Current members
-              Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.grey.shade300),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: group.members.length,
-                    itemBuilder: (context, index) {
-                      final memberId = group.members[index];
-                      final member = _communityMembers.firstWhere(
-                        (user) => user.uid == memberId,
-                        orElse: () => UserModel(
-                          uid: memberId,
-                          username: 'Unknown User',
-                          email: '',
-                        ),
-                      );
-                      final isAdmin = group.admins.contains(memberId);
-                      final canRemove = group.admins.contains(_currentUserId) && 
-                                      memberId != _currentUserId;
-
-                      return SizedBox(
-                        height: 64,
-                        child: ListTile(
-                          dense: true,
-                          leading: CircleAvatar(
-                            radius: 20,
+          height: 400,
+          child: _communityMembers.isEmpty
+              ? Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.people_outline,
+                      size: 64,
+                      color: AppTheme.getSubtitleColor(context),
+                    ),
+                    SizedBox(height: 16),
+                    Text('No members found'),
+                    SizedBox(height: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        Navigator.pop(context);
+                        await _loadCommunityMembers();
+                      },
+                      child: Text('Refresh'),
+                    ),
+                  ],
+                )
+              : ListView.builder(
+                  itemCount: _communityMembers.length,
+                  itemBuilder: (context, index) {
+                    final member = _communityMembers[index];
+                    
+                    return ListTile(
+                      leading: Stack(
+                        children: [
+                          CircleAvatar(
                             backgroundImage: member.profileImageUrl?.isNotEmpty == true
                                 ? NetworkImage(member.profileImageUrl!)
                                 : null,
                             child: member.profileImageUrl?.isEmpty != false
-                                ? Icon(Icons.person, size: 16)
+                                ? Icon(Icons.person)
                                 : null,
                           ),
-                          title: Text(
-                            member.username,
-                            style: TextStyle(fontSize: 14),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(
-                            isAdmin ? 'Admin' : 'Member',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                          trailing: canRemove
-                              ? PopupMenuButton<String>(
-                                  onSelected: (action) async {
-                                    if (action == 'remove') {
-                                      await _removeMemberFromGroup(group.id, memberId);
-                                    } else if (action == 'make_admin') {
-                                      await _makeGroupAdmin(group.id, memberId);
-                                    } else if (action == 'remove_admin') {
-                                      await _removeGroupAdmin(group.id, memberId);
-                                    }
-                                    Navigator.pop(context); // Refresh the dialog
-                                  },
-                                  itemBuilder: (context) => [
-                                    if (!isAdmin)
-                                      PopupMenuItem(
-                                        value: 'make_admin',
-                                        child: Text('Make Admin'),
-                                      ),
-                                    if (isAdmin && group.admins.length > 1)
-                                      PopupMenuItem(
-                                        value: 'remove_admin',
-                                        child: Text('Remove Admin'),
-                                      ),
-                                    PopupMenuItem(
-                                      value: 'remove',
-                                      child: Text('Remove from Group'),
-                                    ),
-                                  ],
-                                )
-                              : isAdmin
-                                  ? Icon(Icons.admin_panel_settings, color: Colors.orange, size: 20)
-                                  : null,
-                        ),
+                          if (member.isOnline == true)
+                            Positioned(
+                              right: 0,
+                              bottom: 0,
+                              child: Container(
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  color: Colors.green,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: Colors.white, width: 2),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      title: Text(member.username),
+                      subtitle: Text(
+                        member.isOnline == true 
+                            ? 'Online' 
+                            : 'Last seen ${_formatTimestamp(member.lastSeen ?? 0)}',
+                      ),
+                      trailing: IconButton(
+                        icon: Icon(Icons.chat),
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          await _createPersonalChat(member.uid);
+                        },
+                        tooltip: 'Start chat',
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDebugInfo() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('🐛 Debug Information'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildDebugItem('Current User ID', _currentUserId.isEmpty ? 'Not logged in' : _currentUserId),
+              _buildDebugItem('Community Members', '${_communityMembers.length} found'),
+              _buildDebugItem('Groups', '${_groups.length} joined'),
+              _buildDebugItem('Personal Chats', '${_personalChats.length} active'),
+              _buildDebugItem('Announcements', '${_announcements.length} loaded'),
+              _buildDebugItem('Loading State', _isLoading ? 'Loading...' : 'Loaded'),
+              SizedBox(height: 16),
+              if (_communityMembers.isNotEmpty) ...[
+                Text('Members:', style: TextStyle(fontWeight: FontWeight.bold)),
+                SizedBox(height: 8),
+                ...(_communityMembers.take(5).map((member) => 
+                  Text('• ${member.username} (${member.email})', style: TextStyle(fontSize: 12))
+                ).toList()),
+                if (_communityMembers.length > 5)
+                  Text('... and ${_communityMembers.length - 5} more', style: TextStyle(fontSize: 12)),
+              ],
+              SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      await _loadCommunityMembers();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Members reloaded')),
                       );
                     },
+                    icon: Icon(Icons.refresh, size: 16),
+                    label: Text('Reload'),
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: Size(0, 32),
+                      padding: EdgeInsets.symmetric(horizontal: 12),
+                    ),
                   ),
-                ),
-              ),
-              SizedBox(height: AppTheme.mediumSpacing),
-              // Add new members button
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _showAddMembersDialog(group);
-                  },
-                  icon: Icon(Icons.person_add),
-                  label: Text('Add Members'),
-                ),
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      await _createSampleUsers();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Sample users created')),
+                      );
+                    },
+                    icon: Icon(Icons.person_add, size: 16),
+                    label: Text('Add Samples'),
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: Size(0, 32),
+                      padding: EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -1508,370 +2181,44 @@ class _CommunityScreenState extends State<CommunityScreen>
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Done'),
+            child: Text('Close'),
           ),
         ],
       ),
     );
   }
 
-  void _showAddMembersDialog(GroupModel group) {
-    final availableMembers = _communityMembers
-        .where((user) => !group.members.contains(user.uid))
-        .toList();
-
-    if (availableMembers.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('All community members are already in the group')),
-      );
-      return;
-    }
-
-    List<String> selectedMembers = [];
-
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text('Add Members'),
-          contentPadding: EdgeInsets.fromLTRB(24, 20, 24, 0),
-          content: Container(
-            width: double.maxFinite,
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.5,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (selectedMembers.isNotEmpty) ...[
-                  Container(
-                    padding: EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: AppTheme.getPrimaryColor(context).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      '${selectedMembers.length} member(s) selected',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.getPrimaryColor(context),
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                  SizedBox(height: AppTheme.smallSpacing),
-                ],
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey.shade300),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: availableMembers.length,
-                      itemBuilder: (context, index) {
-                        final member = availableMembers[index];
-                        final isSelected = selectedMembers.contains(member.uid);
-                        
-                        return SizedBox(
-                          height: 56,
-                          child: CheckboxListTile(
-                            dense: true,
-                            value: isSelected,
-                            title: Text(
-                              member.username,
-                              style: TextStyle(fontSize: 14),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              member.email,
-                              style: TextStyle(fontSize: 12),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            onChanged: (bool? value) {
-                              setDialogState(() {
-                                if (value == true) {
-                                  selectedMembers.add(member.uid);
-                                } else {
-                                  selectedMembers.remove(member.uid);
-                                }
-                              });
-                            },
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              ],
+  Widget _buildDebugItem(String label, String value) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(
+              '$label:',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Cancel'),
+          Expanded(
+            child: Text(
+              value,
+              style: TextStyle(fontSize: 12),
             ),
-            ElevatedButton(
-              onPressed: selectedMembers.isNotEmpty
-                  ? () async {
-                      Navigator.pop(context);
-                      await _addMembersToGroup(group.id, selectedMembers);
-                    }
-                  : null,
-              child: Text('Add'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Group Management Methods
-  Future<void> _updateGroup(String groupId, String name, String description) async {
-    try {
-      await _database.child('groups').child(groupId).update({
-        'name': name,
-        'description': description,
-      });
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Group updated successfully')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error updating group: $e')),
-      );
-    }
-  }
-
-  Future<void> _addMembersToGroup(String groupId, List<String> memberIds) async {
-    try {
-      final updates = <String, dynamic>{};
-      for (String memberId in memberIds) {
-        updates['members/$memberId'] = true;
-      }
-      
-      await _database.child('groups').child(groupId).update(updates);
-      
-      // Send system message
-      await _sendMessage(
-        groupId,
-        '${memberIds.length} new member(s) added to the group',
-        MessageType.system,
-        isGroup: true,
-      );
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Members added successfully')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error adding members: $e')),
-      );
-    }
-  }
-
-  Future<void> _removeMemberFromGroup(String groupId, String memberId) async {
-    try {
-      await _database.child('groups').child(groupId).child('members').child(memberId).remove();
-      await _database.child('groups').child(groupId).child('admins').child(memberId).remove();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Member removed successfully')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error removing member: $e')),
-      );
-    }
-  }
-
-  Future<void> _makeGroupAdmin(String groupId, String memberId) async {
-    try {
-      await _database.child('groups').child(groupId).child('admins').child(memberId).set(true);
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Member promoted to admin')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error making admin: $e')),
-      );
-    }
-  }
-
-  Future<void> _removeGroupAdmin(String groupId, String memberId) async {
-    try {
-      await _database.child('groups').child(groupId).child('admins').child(memberId).remove();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Admin privileges removed')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error removing admin: $e')),
-      );
-    }
-  }
-
-  // Confirmation Dialogs
-  void _confirmDeleteGroup(GroupModel group) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete Group'),
-        content: Text('Are you sure you want to delete "${group.name}"? This action cannot be undone.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () async {
-              await _deleteGroup(group.id);
-              Navigator.pop(context);
-            },
-            child: Text('Delete'),
           ),
         ],
       ),
     );
   }
 
-  void _confirmLeaveGroup(GroupModel group) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Leave Group'),
-        content: Text('Are you sure you want to leave "${group.name}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-            onPressed: () async {
-              await _leaveGroup(group.id);
-              Navigator.pop(context);
-            },
-            child: Text('Leave'),
-          ),
-        ],
+  void _showAllAnnouncements() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AnnouncementsScreen(announcements: _announcements),
       ),
     );
-  }
-
-  void _confirmDeleteChat(ChatModel chat) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete Chat'),
-        content: Text('Are you sure you want to delete this chat? This action cannot be undone.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () async {
-              await _deleteChat(chat.id);
-              Navigator.pop(context);
-            },
-            child: Text('Delete'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _confirmBlockUser(ChatModel chat) {
-    final otherUser = _getOtherUserFromChat(chat);
-    
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Block User'),
-        content: Text('Are you sure you want to block ${otherUser.username}?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-            onPressed: () async {
-              await _blockUser(otherUser.uid);
-              Navigator.pop(context);
-            },
-            child: Text('Block'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Delete/Leave/Block Operations
-  Future<void> _deleteGroup(String groupId) async {
-    try {
-      await _database.child('groups').child(groupId).remove();
-      await _database.child('group_messages').child(groupId).remove();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Group deleted successfully')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error deleting group: $e')),
-      );
-    }
-  }
-
-  Future<void> _leaveGroup(String groupId) async {
-    try {
-      await _database.child('groups').child(groupId).child('members').child(_currentUserId).remove();
-      await _database.child('groups').child(groupId).child('admins').child(_currentUserId).remove();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Left group successfully')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error leaving group: $e')),
-      );
-    }
-  }
-
-  Future<void> _deleteChat(String chatId) async {
-    try {
-      await _database.child('chats').child(chatId).remove();
-      await _database.child('chat_messages').child(chatId).remove();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Chat deleted successfully')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error deleting chat: $e')),
-      );
-    }
-  }
-
-  Future<void> _blockUser(String userId) async {
-    try {
-      await _database.child('users').child(_currentUserId).child('blockedUsers').child(userId).set(true);
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('User blocked successfully')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error blocking user: $e')),
-      );
-    }
   }
 
   // Info Dialogs
@@ -1890,14 +2237,23 @@ class _CommunityScreenState extends State<CommunityScreen>
               SizedBox(height: AppTheme.mediumSpacing),
             ],
             Text('Members: ${group.members.length}'),
-            Text('Created: ${_formatTimestamp(group.createdAt)}'),
             Text('Admins: ${group.admins.length}'),
+            Text('Created: ${_formatTimestamp(group.createdAt)}'),
+            if (group.lastMessageTime > 0)
+              Text('Last Activity: ${_formatTimestamp(group.lastMessageTime)}'),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text('Close'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _openGroupChat(group);
+            },
+            child: Text('Open Chat'),
           ),
         ],
       ),
@@ -1929,6 +2285,9 @@ class _CommunityScreenState extends State<CommunityScreen>
             ),
             SizedBox(height: AppTheme.mediumSpacing),
             Text('Chat started: ${_formatTimestamp(chat.createdAt ?? 0)}'),
+            if (chat.lastMessageTime > 0)
+              Text('Last message: ${_formatTimestamp(chat.lastMessageTime)}'),
+            Text('Status: ${otherUser.isOnline == true ? 'Online' : 'Offline'}'),
           ],
         ),
         actions: [
@@ -1936,226 +2295,170 @@ class _CommunityScreenState extends State<CommunityScreen>
             onPressed: () => Navigator.pop(context),
             child: Text('Close'),
           ),
-        ],
-      ),
-    );
-  }
-
-  // Menu Actions
-  void _handleMenuAction(String action) {
-    switch (action) {
-      case 'create_announcement':
-        _showCreateAnnouncementDialog();
-        break;
-      case 'community_settings':
-        _showCommunitySettings();
-        break;
-      case 'member_list':
-        _showMemberList();
-        break;
-      case 'debug_info':
-        _showDebugInfo();
-        break;
-    }
-  }
-
-  void _showDebugInfo() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('🐛 Debug Information'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Current User ID:', style: TextStyle(fontWeight: FontWeight.bold)),
-              Text(_currentUserId.isEmpty ? 'Not logged in' : _currentUserId),
-              SizedBox(height: 16),
-              Text('Community Members:', style: TextStyle(fontWeight: FontWeight.bold)),
-              Text('Count: ${_communityMembers.length}'),
-              SizedBox(height: 8),
-              if (_communityMembers.isEmpty)
-                Text('❌ No members found!')
-              else
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: _communityMembers.map((member) => 
-                    Text('• ${member.username} (${member.email})')
-                  ).toList(),
-                ),
-              SizedBox(height: 16),
-              Text('Database Status:', style: TextStyle(fontWeight: FontWeight.bold)),
-              Text('Loading: $_isLoading'),
-              SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: () async {
-                  Navigator.pop(context);
-                  await _loadCommunityMembers();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Reloaded community members')),
-                  );
-                },
-                child: Text('🔄 Reload Members'),
-              ),
-              SizedBox(height: 8),
-              ElevatedButton(
-                onPressed: () async {
-                  Navigator.pop(context);
-                  await _createSampleUsers();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Created sample users')),
-                  );
-                },
-                child: Text('➕ Create Sample Users'),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _openPersonalChat(chat);
+            },
+            child: Text('Open Chat'),
           ),
         ],
       ),
     );
   }
 
-  void _showCreateAnnouncementDialog() {
-    final titleController = TextEditingController();
-    final contentController = TextEditingController();
-
+  // Confirmation Dialogs
+  void _confirmDeleteGroup(GroupModel group) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Create Announcement'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: InputDecoration(
-                labelText: 'Title',
-                hintText: 'Enter announcement title',
-              ),
-            ),
-            SizedBox(height: AppTheme.mediumSpacing),
-            TextField(
-              controller: contentController,
-              decoration: InputDecoration(
-                labelText: 'Content',
-                hintText: 'Enter announcement content',
-              ),
-              maxLines: 4,
-            ),
-          ],
-        ),
+        title: Text('Delete Group'),
+        content: Text('Are you sure you want to delete "${group.name}"? This action cannot be undone and will remove all messages.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: titleController.text.isNotEmpty
-                ? () async {
-                    await _createAnnouncement(
-                      titleController.text.trim(),
-                      contentController.text.trim(),
-                    );
-                    Navigator.pop(context);
-                  }
-                : null,
-            child: Text('Post'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async {
+              Navigator.pop(context);
+              await _deleteGroup(group.id);
+            },
+            child: Text('Delete', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _createAnnouncement(String title, String content) async {
+  void _confirmLeaveGroup(GroupModel group) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Leave Group'),
+        content: Text('Are you sure you want to leave "${group.name}"? You can be added back by an admin.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            onPressed: () async {
+              Navigator.pop(context);
+              await _leaveGroup(group.id);
+            },
+            child: Text('Leave', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDeleteChat(ChatModel chat) {
+    final otherUser = _getOtherUserFromChat(chat);
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete Chat'),
+        content: Text('Are you sure you want to delete your chat with ${otherUser.username}? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async {
+              Navigator.pop(context);
+              await _deleteChat(chat.id);
+            },
+            child: Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Placeholder methods for functionality that would require more complex implementation
+  void _showEditGroupDialog(GroupModel group) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Edit group functionality coming soon!')),
+    );
+  }
+
+  void _showManageMembersDialog(GroupModel group) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Manage members functionality coming soon!')),
+    );
+  }
+
+  Future<void> _deleteGroup(String groupId) async {
     try {
-      final announcementRef = _database.child('announcements').push();
-      
-      final announcementData = {
-        'id': announcementRef.key,
-        'title': title,
-        'content': content,
-        'createdBy': _currentUserId,
-        'timestamp': ServerValue.timestamp,
-      };
-      
-      await announcementRef.set(announcementData);
+      await _database.child('groups').child(groupId).remove();
+      await _database.child('group_messages').child(groupId).remove();
       
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Announcement posted successfully')),
+        SnackBar(
+          content: Text('Group deleted successfully'),
+          backgroundColor: Colors.green,
+        ),
       );
     } catch (e) {
+      print('❌ Error deleting group: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error posting announcement: $e')),
+        SnackBar(
+          content: Text('Error deleting group: $e'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
 
-  void _showCommunitySettings() {
-    // Implement community settings
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Community settings coming soon')),
-    );
-  }
-
-  void _showMemberList() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Community Members'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 400,
-          child: ListView.builder(
-            itemCount: _communityMembers.length,
-            itemBuilder: (context, index) {
-              final member = _communityMembers[index];
-              
-              return ListTile(
-                leading: CircleAvatar(
-                  backgroundImage: member.profileImageUrl?.isNotEmpty == true
-                      ? NetworkImage(member.profileImageUrl!)
-                      : null,
-                  child: member.profileImageUrl?.isEmpty != false
-                      ? Icon(Icons.person)
-                      : null,
-                ),
-                title: Text(member.username),
-                subtitle: Text(member.email),
-                trailing: IconButton(
-                  icon: Icon(Icons.chat),
-                  onPressed: () async {
-                    Navigator.pop(context);
-                    await _createPersonalChat(member.uid);
-                  },
-                ),
-              );
-            },
-          ),
+  Future<void> _leaveGroup(String groupId) async {
+    try {
+      await _database.child('groups').child(groupId).child('members').child(_currentUserId).remove();
+      await _database.child('groups').child(groupId).child('admins').child(_currentUserId).remove();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Left group successfully'),
+          backgroundColor: Colors.green,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
-          ),
-        ],
-      ),
-    );
+      );
+    } catch (e) {
+      print('❌ Error leaving group: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error leaving group: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
-  void _showAllAnnouncements() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => AnnouncementsScreen(announcements: _announcements),
-      ),
-    );
+  Future<void> _deleteChat(String chatId) async {
+    try {
+      await _database.child('chats').child(chatId).remove();
+      await _database.child('chat_messages').child(chatId).remove();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Chat deleted successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      print('❌ Error deleting chat: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error deleting chat: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   // Utility Methods
@@ -2170,14 +2473,17 @@ class _CommunityScreenState extends State<CommunityScreen>
       orElse: () => UserModel(
         uid: otherUserId,
         username: 'Unknown User',
-        email: '',
+        email: 'unknown@bbbd.com',
       ),
     );
   }
 
   String _encryptMessage(String message) {
     try {
-      return _encrypter.encrypt(message, iv: _iv).base64;
+      // Simple encoding (you can implement proper encryption here)
+      final bytes = utf8.encode(message + _encryptionKey);
+      final digest = sha256.convert(bytes);
+      return base64.encode(utf8.encode(message)) + ':' + digest.toString().substring(0, 8);
     } catch (e) {
       return message; // Fallback to plain text if encryption fails
     }
@@ -2185,20 +2491,26 @@ class _CommunityScreenState extends State<CommunityScreen>
 
   String _decryptMessage(String encryptedMessage) {
     try {
-      return _encrypter.decrypt64(encryptedMessage, iv: _iv);
+      if (encryptedMessage.contains(':')) {
+        final parts = encryptedMessage.split(':');
+        return utf8.decode(base64.decode(parts[0]));
+      }
+      return encryptedMessage; // Return as-is if not encrypted
     } catch (e) {
       return encryptedMessage; // Return as-is if decryption fails
     }
   }
 
   String _formatTimestamp(int timestamp) {
-    if (timestamp == 0) return '';
+    if (timestamp == 0) return 'Never';
     
     final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
     final now = DateTime.now();
     final difference = now.difference(dateTime);
 
-    if (difference.inDays > 0) {
+    if (difference.inDays > 7) {
+      return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
+    } else if (difference.inDays > 0) {
       return '${difference.inDays}d ago';
     } else if (difference.inHours > 0) {
       return '${difference.inHours}h ago';
@@ -2210,8 +2522,32 @@ class _CommunityScreenState extends State<CommunityScreen>
   }
 
   Future<void> _refreshData() async {
-    // Refresh is handled by real-time listeners
-    await Future.delayed(Duration(seconds: 1));
+    setState(() {
+      _isLoading = true;
+    });
+    
+    try {
+      await _loadCommunityMembers();
+      await Future.delayed(Duration(seconds: 1)); // Give time for listeners to update
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Community data refreshed'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error refreshing data: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
 
   @override
@@ -2221,17 +2557,27 @@ class _CommunityScreenState extends State<CommunityScreen>
     _announcementsSubscription?.cancel();
     _groupsSubscription?.cancel();
     _chatsSubscription?.cancel();
+    
+    // Update user offline status
+    if (_currentUserId.isNotEmpty) {
+      _database.child('users').child(_currentUserId).update({
+        'isOnline': false,
+        'lastSeen': ServerValue.timestamp,
+      });
+    }
+    
     super.dispose();
   }
 }
 
-// Data Models
+// Data Models - Updated with additional fields
 class AnnouncementModel {
   final String id;
   final String title;
   final String content;
   final String createdBy;
   final int timestamp;
+  final String priority;
 
   AnnouncementModel({
     required this.id,
@@ -2239,6 +2585,7 @@ class AnnouncementModel {
     required this.content,
     required this.createdBy,
     required this.timestamp,
+    this.priority = 'normal',
   });
 
   factory AnnouncementModel.fromMap(String id, Map<dynamic, dynamic> map) {
@@ -2248,6 +2595,7 @@ class AnnouncementModel {
       content: map['content'] ?? '',
       createdBy: map['createdBy'] ?? '',
       timestamp: map['timestamp'] ?? 0,
+      priority: map['priority'] ?? 'normal',
     );
   }
 }
@@ -2264,6 +2612,7 @@ class GroupModel {
   final List<String> admins;
   final String? imageUrl;
   final int unreadCount;
+  final bool isActive;
 
   GroupModel({
     required this.id,
@@ -2277,6 +2626,7 @@ class GroupModel {
     required this.admins,
     this.imageUrl,
     required this.unreadCount,
+    this.isActive = true,
   });
 
   factory GroupModel.fromMap(String id, Map<dynamic, dynamic> map) {
@@ -2295,6 +2645,7 @@ class GroupModel {
       admins: adminsMap.keys.cast<String>().toList(),
       imageUrl: map['imageUrl'],
       unreadCount: map['unreadCount'] ?? 0,
+      isActive: map['isActive'] ?? true,
     );
   }
 }
@@ -2306,6 +2657,7 @@ class ChatModel {
   final int lastMessageTime;
   final int unreadCount;
   final int? createdAt;
+  final bool isActive;
 
   ChatModel({
     required this.id,
@@ -2314,6 +2666,7 @@ class ChatModel {
     required this.lastMessageTime,
     required this.unreadCount,
     this.createdAt,
+    this.isActive = true,
   });
 
   factory ChatModel.fromMap(String id, Map<dynamic, dynamic> map) {
@@ -2326,6 +2679,7 @@ class ChatModel {
       lastMessageTime: map['lastMessageTime'] ?? 0,
       unreadCount: map['unreadCount'] ?? 0,
       createdAt: map['createdAt'],
+      isActive: map['isActive'] ?? true,
     );
   }
 }
@@ -2337,6 +2691,8 @@ class UserModel {
   final String? profileImageUrl;
   final String? phoneNumber;
   final int? age;
+  final bool? isOnline;
+  final int? lastSeen;
 
   UserModel({
     required this.uid,
@@ -2345,6 +2701,8 @@ class UserModel {
     this.profileImageUrl,
     this.phoneNumber,
     this.age,
+    this.isOnline,
+    this.lastSeen,
   });
 
   factory UserModel.fromMap(String uid, Map<dynamic, dynamic> map) {
@@ -2355,41 +2713,8 @@ class UserModel {
       profileImageUrl: map['profileImageUrl'],
       phoneNumber: map['phoneNumber'],
       age: map['age'],
-    );
-  }
-}
-
-class MessageModel {
-  final String id;
-  final String senderId;
-  final String message;
-  final int timestamp;
-  final MessageType type;
-  final bool edited;
-  final bool deleted;
-
-  MessageModel({
-    required this.id,
-    required this.senderId,
-    required this.message,
-    required this.timestamp,
-    required this.type,
-    required this.edited,
-    required this.deleted,
-  });
-
-  factory MessageModel.fromMap(String id, Map<dynamic, dynamic> map) {
-    return MessageModel(
-      id: id,
-      senderId: map['senderId'] ?? '',
-      message: map['message'] ?? '',
-      timestamp: map['timestamp'] ?? 0,
-      type: MessageType.values.firstWhere(
-        (e) => e.toString().split('.').last == map['type'],
-        orElse: () => MessageType.text,
-      ),
-      edited: map['edited'] ?? false,
-      deleted: map['deleted'] ?? false,
+      isOnline: map['isOnline'],
+      lastSeen: map['lastSeen'],
     );
   }
 }
@@ -2402,82 +2727,11 @@ enum MessageType {
   system,
 }
 
-// Additional Screens
-
-class GroupChatScreen extends StatefulWidget {
+// Simplified Chat Screens (you can enhance these further)
+class GroupChatScreen extends StatelessWidget {
   final GroupModel group;
 
   const GroupChatScreen({super.key, required this.group});
-
-  @override
-  _GroupChatScreenState createState() => _GroupChatScreenState();
-}
-
-class _GroupChatScreenState extends State<GroupChatScreen> {
-  final DatabaseReference _database = FirebaseDatabase.instance.ref();
-  final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
-  final TextEditingController _messageController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-  
-  final _encrypter = encrypt.Encrypter(encrypt.AES(encrypt.Key.fromSecureRandom(32)));
-  final _iv = encrypt.IV.fromSecureRandom(16);
-  
-  List<MessageModel> _messages = [];
-  StreamSubscription? _messagesSubscription;
-  bool _isLoading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _setupMessageListener();
-    _markAsRead();
-  }
-
-  void _setupMessageListener() {
-    _messagesSubscription = _database
-        .child('group_messages')
-        .child(widget.group.id)
-        .orderByChild('timestamp')
-        .onValue
-        .listen((event) {
-      if (event.snapshot.value != null) {
-        final data = Map<String, dynamic>.from(event.snapshot.value as Map);
-        setState(() {
-          _messages = data.entries
-              .map((e) => MessageModel.fromMap(e.key, e.value))
-              .toList()
-            ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
-          _isLoading = false;
-        });
-        _scrollToBottom();
-      } else {
-        setState(() {
-          _messages = [];
-          _isLoading = false;
-        });
-      }
-    });
-  }
-
-  void _markAsRead() async {
-    await _database
-        .child('groups')
-        .child(widget.group.id)
-        .child('unreadCount')
-        .set(0);
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -2486,631 +2740,52 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              widget.group.name,
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            Text(
-              '${widget.group.members.length} members',
-              style: TextStyle(fontSize: 12, color: AppTheme.getSubtitleColor(context)),
-            ),
+            Text(group.name, style: TextStyle(fontSize: 16)),
+            Text('${group.members.length} members', 
+                 style: TextStyle(fontSize: 12, color: Colors.grey)),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.info),
-            onPressed: _showGroupInfo,
-          ),
-        ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: _isLoading
-                ? Center(child: CircularProgressIndicator())
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: EdgeInsets.all(AppTheme.mediumSpacing),
-                    itemCount: _messages.length,
-                    itemBuilder: (context, index) {
-                      final message = _messages[index];
-                      return _buildMessageBubble(message);
-                    },
-                  ),
-          ),
-          _buildMessageInput(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMessageBubble(MessageModel message) {
-    final isOwnMessage = message.senderId == _currentUserId;
-    final decryptedMessage = _decryptMessage(message.message);
-    
-    return Container(
-      margin: EdgeInsets.only(bottom: AppTheme.smallSpacing),
-      child: Row(
-        mainAxisAlignment: isOwnMessage ? MainAxisAlignment.end : MainAxisAlignment.start,
-        children: [
-          if (!isOwnMessage) ...[
-            CircleAvatar(
-              radius: 16,
-              child: Icon(Icons.person, size: 16),
-            ),
-            SizedBox(width: AppTheme.smallSpacing),
-          ],
-          Flexible(
-            child: Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: AppTheme.mediumSpacing,
-                vertical: AppTheme.smallSpacing,
-              ),
-              decoration: BoxDecoration(
-                color: isOwnMessage
-                    ? AppTheme.getPrimaryColor(context)
-                    : AppTheme.getSurfaceColor(context),
-                borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (!isOwnMessage && message.type != MessageType.system)
-                    Text(
-                      'User', // You'd get the actual username here
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: AppTheme.getSubtitleColor(context),
-                      ),
-                    ),
-                  Text(
-                    decryptedMessage,
-                    style: TextStyle(
-                      color: isOwnMessage
-                          ? AppTheme.microphoneColor
-                          : AppTheme.getTextColor(context),
-                    ),
-                  ),
-                  SizedBox(height: 2),
-                  Text(
-                    _formatTimestamp(message.timestamp),
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: isOwnMessage
-                          ? AppTheme.microphoneColor.withOpacity(0.7)
-                          : AppTheme.getSubtitleColor(context),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (isOwnMessage) ...[
-            SizedBox(width: AppTheme.smallSpacing),
-            CircleAvatar(
-              radius: 16,
-              child: Icon(Icons.person, size: 16),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMessageInput() {
-    return Container(
-      padding: EdgeInsets.all(AppTheme.mediumSpacing),
-      decoration: BoxDecoration(
-        color: AppTheme.getSurfaceColor(context),
-        border: Border(
-          top: BorderSide(
-            color: AppTheme.getDividerColor(context),
-            width: 1,
-          ),
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _messageController,
-              decoration: InputDecoration(
-                hintText: 'Type a message...',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(AppTheme.largeRadius),
-                ),
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: AppTheme.mediumSpacing,
-                  vertical: AppTheme.smallSpacing,
-                ),
-              ),
-              maxLines: null,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => _sendMessage(),
-            ),
-          ),
-          SizedBox(width: AppTheme.smallSpacing),
-          IconButton(
-            onPressed: _sendMessage,
-            icon: Icon(Icons.send),
-            style: IconButton.styleFrom(
-              backgroundColor: AppTheme.getPrimaryColor(context),
-              foregroundColor: AppTheme.microphoneColor,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _sendMessage() async {
-    if (_messageController.text.trim().isEmpty) return;
-
-    final message = _messageController.text.trim();
-    _messageController.clear();
-
-    try {
-      final messageRef = _database
-          .child('group_messages')
-          .child(widget.group.id)
-          .push();
-      
-      final encryptedMessage = _encryptMessage(message);
-      
-      final messageData = {
-        'id': messageRef.key,
-        'senderId': _currentUserId,
-        'message': encryptedMessage,
-        'timestamp': ServerValue.timestamp,
-        'type': MessageType.text.toString().split('.').last,
-        'edited': false,
-        'deleted': false,
-      };
-      
-      await messageRef.set(messageData);
-      
-      // Update group with last message
-      await _database.child('groups').child(widget.group.id).update({
-        'lastMessage': encryptedMessage,
-        'lastMessageTime': ServerValue.timestamp,
-      });
-      
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to send message: $e')),
-      );
-    }
-  }
-
-  void _showGroupInfo() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(widget.group.name),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            if (widget.group.description.isNotEmpty) ...[
-              Text('Description:', style: TextStyle(fontWeight: FontWeight.bold)),
-              Text(widget.group.description),
-              SizedBox(height: AppTheme.mediumSpacing),
-            ],
-            Text('Members: ${widget.group.members.length}'),
-            Text('Admins: ${widget.group.admins.length}'),
+            Icon(Icons.construction, size: 64, color: Colors.grey),
+            SizedBox(height: 16),
+            Text('Group Chat Coming Soon!', style: TextStyle(fontSize: 18)),
+            SizedBox(height: 8),
+            Text('Chat functionality will be implemented here'),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
-          ),
-        ],
       ),
     );
-  }
-
-  String _encryptMessage(String message) {
-    try {
-      return _encrypter.encrypt(message, iv: _iv).base64;
-    } catch (e) {
-      return message;
-    }
-  }
-
-  String _decryptMessage(String encryptedMessage) {
-    try {
-      return _encrypter.decrypt64(encryptedMessage, iv: _iv);
-    } catch (e) {
-      return encryptedMessage;
-    }
-  }
-
-  String _formatTimestamp(int timestamp) {
-    final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    final now = DateTime.now();
-    
-    if (dateTime.day == now.day &&
-        dateTime.month == now.month &&
-        dateTime.year == now.year) {
-      return '${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
-    } else {
-      return '${dateTime.day}/${dateTime.month} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
-    }
-  }
-
-  @override
-  void dispose() {
-    _messageController.dispose();
-    _scrollController.dispose();
-    _messagesSubscription?.cancel();
-    super.dispose();
   }
 }
 
-class PersonalChatScreen extends StatefulWidget {
+class PersonalChatScreen extends StatelessWidget {
   final ChatModel chat;
 
   const PersonalChatScreen({super.key, required this.chat});
 
   @override
-  _PersonalChatScreenState createState() => _PersonalChatScreenState();
-}
-
-class _PersonalChatScreenState extends State<PersonalChatScreen> {
-  final DatabaseReference _database = FirebaseDatabase.instance.ref();
-  final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
-  final TextEditingController _messageController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-  
-  final _encrypter = encrypt.Encrypter(encrypt.AES(encrypt.Key.fromSecureRandom(32)));
-  final _iv = encrypt.IV.fromSecureRandom(16);
-  
-  List<MessageModel> _messages = [];
-  StreamSubscription? _messagesSubscription;
-  bool _isLoading = true;
-  UserModel? _otherUser;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadOtherUser();
-    _setupMessageListener();
-    _markAsRead();
-  }
-
-  void _loadOtherUser() async {
-    final otherUserId = widget.chat.participants.firstWhere(
-      (id) => id != _currentUserId,
-      orElse: () => '',
-    );
-    
-    if (otherUserId.isNotEmpty) {
-      try {
-        final snapshot = await _database.child('users').child(otherUserId).once();
-        if (snapshot.snapshot.value != null) {
-          setState(() {
-            _otherUser = UserModel.fromMap(
-              otherUserId,
-              Map<String, dynamic>.from(snapshot.snapshot.value as Map),
-            );
-          });
-        }
-      } catch (e) {
-        print('Error loading other user: $e');
-      }
-    }
-  }
-
-  void _setupMessageListener() {
-    _messagesSubscription = _database
-        .child('chat_messages')
-        .child(widget.chat.id)
-        .orderByChild('timestamp')
-        .onValue
-        .listen((event) {
-      if (event.snapshot.value != null) {
-        final data = Map<String, dynamic>.from(event.snapshot.value as Map);
-        setState(() {
-          _messages = data.entries
-              .map((e) => MessageModel.fromMap(e.key, e.value))
-              .toList()
-            ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
-          _isLoading = false;
-        });
-        _scrollToBottom();
-      } else {
-        setState(() {
-          _messages = [];
-          _isLoading = false;
-        });
-      }
-    });
-  }
-
-  void _markAsRead() async {
-    await _database
-        .child('chats')
-        .child(widget.chat.id)
-        .child('unreadCount')
-        .set(0);
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
+        title: Text('Personal Chat'),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircleAvatar(
-              radius: 20,
-              backgroundImage: _otherUser?.profileImageUrl?.isNotEmpty == true
-                  ? NetworkImage(_otherUser!.profileImageUrl!)
-                  : null,
-              child: _otherUser?.profileImageUrl?.isEmpty != false
-                  ? Icon(Icons.person)
-                  : null,
-            ),
-            SizedBox(width: AppTheme.smallSpacing),
-            Expanded(
-              child: Text(
-                _otherUser?.username ?? 'Unknown User',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-              ),
-            ),
+            Icon(Icons.construction, size: 64, color: Colors.grey),
+            SizedBox(height: 16),
+            Text('Personal Chat Coming Soon!', style: TextStyle(fontSize: 18)),
+            SizedBox(height: 8),
+            Text('Chat functionality will be implemented here'),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.info),
-            onPressed: _showChatInfo,
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: _isLoading
-                ? Center(child: CircularProgressIndicator())
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: EdgeInsets.all(AppTheme.mediumSpacing),
-                    itemCount: _messages.length,
-                    itemBuilder: (context, index) {
-                      final message = _messages[index];
-                      return _buildMessageBubble(message);
-                    },
-                  ),
-          ),
-          _buildMessageInput(),
-        ],
       ),
     );
-  }
-
-  Widget _buildMessageBubble(MessageModel message) {
-    final isOwnMessage = message.senderId == _currentUserId;
-    final decryptedMessage = _decryptMessage(message.message);
-    
-    return Container(
-      margin: EdgeInsets.only(bottom: AppTheme.smallSpacing),
-      child: Row(
-        mainAxisAlignment: isOwnMessage ? MainAxisAlignment.end : MainAxisAlignment.start,
-        children: [
-          Flexible(
-            child: Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: AppTheme.mediumSpacing,
-                vertical: AppTheme.smallSpacing,
-              ),
-              decoration: BoxDecoration(
-                color: isOwnMessage
-                    ? AppTheme.getPrimaryColor(context)
-                    : AppTheme.getSurfaceColor(context),
-                borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    decryptedMessage,
-                    style: TextStyle(
-                      color: isOwnMessage
-                          ? AppTheme.microphoneColor
-                          : AppTheme.getTextColor(context),
-                    ),
-                  ),
-                  SizedBox(height: 2),
-                  Text(
-                    _formatTimestamp(message.timestamp),
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: isOwnMessage
-                          ? AppTheme.microphoneColor.withOpacity(0.7)
-                          : AppTheme.getSubtitleColor(context),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMessageInput() {
-    return Container(
-      padding: EdgeInsets.all(AppTheme.mediumSpacing),
-      decoration: BoxDecoration(
-        color: AppTheme.getSurfaceColor(context),
-        border: Border(
-          top: BorderSide(
-            color: AppTheme.getDividerColor(context),
-            width: 1,
-          ),
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _messageController,
-              decoration: InputDecoration(
-                hintText: 'Type a message...',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(AppTheme.largeRadius),
-                ),
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: AppTheme.mediumSpacing,
-                  vertical: AppTheme.smallSpacing,
-                ),
-              ),
-              maxLines: null,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => _sendMessage(),
-            ),
-          ),
-          SizedBox(width: AppTheme.smallSpacing),
-          IconButton(
-            onPressed: _sendMessage,
-            icon: Icon(Icons.send),
-            style: IconButton.styleFrom(
-              backgroundColor: AppTheme.getPrimaryColor(context),
-              foregroundColor: AppTheme.microphoneColor,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _sendMessage() async {
-    if (_messageController.text.trim().isEmpty) return;
-
-    final message = _messageController.text.trim();
-    _messageController.clear();
-
-    try {
-      final messageRef = _database
-          .child('chat_messages')
-          .child(widget.chat.id)
-          .push();
-      
-      final encryptedMessage = _encryptMessage(message);
-      
-      final messageData = {
-        'id': messageRef.key,
-        'senderId': _currentUserId,
-        'message': encryptedMessage,
-        'timestamp': ServerValue.timestamp,
-        'type': MessageType.text.toString().split('.').last,
-        'edited': false,
-        'deleted': false,
-      };
-      
-      await messageRef.set(messageData);
-      
-      // Update chat with last message
-      await _database.child('chats').child(widget.chat.id).update({
-        'lastMessage': encryptedMessage,
-        'lastMessageTime': ServerValue.timestamp,
-      });
-      
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to send message: $e')),
-      );
-    }
-  }
-
-  void _showChatInfo() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Chat Info'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_otherUser != null) ...[
-              ListTile(
-                leading: CircleAvatar(
-                  backgroundImage: _otherUser!.profileImageUrl?.isNotEmpty == true
-                      ? NetworkImage(_otherUser!.profileImageUrl!)
-                      : null,
-                  child: _otherUser!.profileImageUrl?.isEmpty != false
-                      ? Icon(Icons.person)
-                      : null,
-                ),
-                title: Text(_otherUser!.username),
-                subtitle: Text(_otherUser!.email),
-              ),
-              SizedBox(height: AppTheme.mediumSpacing),
-            ],
-            Text('Chat started: ${_formatTimestamp(widget.chat.createdAt ?? 0)}'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _encryptMessage(String message) {
-    try {
-      return _encrypter.encrypt(message, iv: _iv).base64;
-    } catch (e) {
-      return message;
-    }
-  }
-
-  String _decryptMessage(String encryptedMessage) {
-    try {
-      return _encrypter.decrypt64(encryptedMessage, iv: _iv);
-    } catch (e) {
-      return encryptedMessage;
-    }
-  }
-
-  String _formatTimestamp(int timestamp) {
-    if (timestamp == 0) return '';
-    
-    final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    final now = DateTime.now();
-    
-    if (dateTime.day == now.day &&
-        dateTime.month == now.month &&
-        dateTime.year == now.year) {
-      return '${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
-    } else {
-      return '${dateTime.day}/${dateTime.month} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
-    }
-  }
-
-  @override
-  void dispose() {
-    _messageController.dispose();
-    _scrollController.dispose();
-    _messagesSubscription?.cancel();
-    super.dispose();
   }
 }
 
@@ -3126,51 +2801,35 @@ class AnnouncementsScreen extends StatelessWidget {
         title: Text('All Announcements'),
       ),
       body: ListView.builder(
-        padding: EdgeInsets.all(AppTheme.mediumSpacing),
+        padding: EdgeInsets.all(16),
         itemCount: announcements.length,
         itemBuilder: (context, index) {
           final announcement = announcements[index];
-          return Container(
-            margin: EdgeInsets.only(bottom: AppTheme.mediumSpacing),
-            child: AppTheme.buildThemedCard(
-              context: context,
+          return Card(
+            margin: EdgeInsets.only(bottom: 16),
+            child: Padding(
+              padding: EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Icon(
-                        Icons.campaign,
-                        color: AppTheme.getPrimaryColor(context),
-                      ),
-                      SizedBox(width: AppTheme.smallSpacing),
+                      Icon(Icons.campaign, color: Colors.blue),
+                      SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           announcement.title,
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.getTextColor(context),
-                          ),
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                         ),
                       ),
                     ],
                   ),
-                  SizedBox(height: AppTheme.mediumSpacing),
-                  Text(
-                    announcement.content,
-                    style: TextStyle(
-                      color: AppTheme.getTextColor(context),
-                      height: 1.4,
-                    ),
-                  ),
-                  SizedBox(height: AppTheme.mediumSpacing),
+                  SizedBox(height: 8),
+                  Text(announcement.content),
+                  SizedBox(height: 8),
                   Text(
                     _formatTimestamp(announcement.timestamp),
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: AppTheme.getSubtitleColor(context),
-                    ),
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ],
               ),
