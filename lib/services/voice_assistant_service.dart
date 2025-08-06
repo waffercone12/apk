@@ -1,4 +1,4 @@
-// File: lib/services/voice_assistant_service.dart
+// File: lib/services/voice_assistant_service.dart (Updated)
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -10,6 +10,7 @@ import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../models/assistant_personality.dart';
 
 class VoiceAssistantService extends ChangeNotifier {
   // Speech-to-Text and Text-to-Speech instances
@@ -26,7 +27,15 @@ class VoiceAssistantService extends ChangeNotifier {
   String _currentResponse = '';
   double _confidence = 0.0;
 
-  // Gemini AI Configuration - REPLACE WITH YOUR ACTUAL API KEY
+  // Assistant personality and settings
+  AssistantPersonality _currentPersonality = AssistantPersonality.supportiveFriend;
+  String _assistantName = 'Coach';
+  String _wakeWord = 'hey coach';
+
+  // Voice testing callback
+  Function(String)? onVoiceTestResult;
+
+  // Gemini AI Configuration
   static const String _geminiApiKey = 'AIzaSyAttKUwx_e82ExDmyIHVgK_YZM_ayjS52c';
   static const String _geminiApiUrl = 
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent';
@@ -53,6 +62,9 @@ class VoiceAssistantService extends ChangeNotifier {
   double get speechVolume => _speechVolume;
   double get speechPitch => _speechPitch;
   String get speechLanguage => _speechLanguage;
+  AssistantPersonality get currentPersonality => _currentPersonality;
+  String get assistantName => _assistantName;
+  String get wakeWord => _wakeWord;
 
   VoiceState get currentState {
     if (_isListening) return VoiceState.listening;
@@ -95,6 +107,62 @@ class VoiceAssistantService extends ChangeNotifier {
       print('Voice Assistant initialization error: $e');
       return false;
     }
+  }
+
+  // Set assistant personality
+  void setPersonality(AssistantPersonality personality) {
+    _currentPersonality = personality;
+    _updateTtsSettingsForPersonality();
+    notifyListeners();
+    print('Assistant personality set to: ${personality.info.name}');
+  }
+
+  // Set wake word and assistant name
+  void setWakeWord(String name) {
+    _assistantName = name;
+    _wakeWord = 'hey ${name.toLowerCase()}';
+    notifyListeners();
+    print('Wake word set to: $_wakeWord');
+  }
+
+  // Update TTS settings based on personality
+  void _updateTtsSettingsForPersonality() {
+    switch (_currentPersonality) {
+      case AssistantPersonality.toughLove:
+        _speechRate = 0.6; // Slightly faster
+        _speechPitch = 0.9; // Slightly lower pitch
+        break;
+      case AssistantPersonality.supportiveFriend:
+        _speechRate = 0.5; // Normal pace
+        _speechPitch = 1.1; // Slightly higher pitch
+        break;
+      case AssistantPersonality.motivationalCoach:
+        _speechRate = 0.7; // Faster, energetic
+        _speechPitch = 1.2; // Higher pitch
+        break;
+      case AssistantPersonality.wiseMentor:
+        _speechRate = 0.4; // Slower, thoughtful
+        _speechPitch = 0.8; // Lower pitch
+        break;
+      case AssistantPersonality.cheerfulCompanion:
+        _speechRate = 0.6; // Upbeat pace
+        _speechPitch = 1.3; // Higher, cheerful pitch
+        break;
+    }
+    
+    // Apply the new settings
+    if (_isInitialized) {
+      _flutterTts.setSpeechRate(_speechRate);
+      _flutterTts.setPitch(_speechPitch);
+    }
+  }
+
+  // Speak with personality-specific response
+  Future<void> speakWithPersonality(String text, AssistantPersonality personality) async {
+    final previousPersonality = _currentPersonality;
+    setPersonality(personality);
+    await _speakResponse(text);
+    setPersonality(previousPersonality);
   }
 
   // Request microphone permission
@@ -176,9 +244,9 @@ class VoiceAssistantService extends ChangeNotifier {
       // Start listening with speech-to-text
       await _speech.listen(
         onResult: _onSpeechResult,
-        listenFor: Duration(seconds: 10), // Maximum listening duration
-        pauseFor: Duration(seconds: 5),   // Pause duration to detect end of speech
-        partialResults: true,             // Get partial results while speaking
+        listenFor: Duration(seconds: 10),
+        pauseFor: Duration(seconds: 5),
+        partialResults: true,
         localeId: _speechLanguage,
         onSoundLevelChange: _onSoundLevelChange,
         cancelOnError: true,
@@ -229,6 +297,16 @@ class VoiceAssistantService extends ChangeNotifier {
     _confidence = result.confidence;
     notifyListeners();
 
+    // Check for wake word during voice testing
+    if (onVoiceTestResult != null) {
+      onVoiceTestResult!(result.recognizedWords);
+    }
+
+    // Check for wake word in normal operation
+    if (result.recognizedWords.toLowerCase().contains(_wakeWord)) {
+      print('Wake word detected: $_wakeWord');
+    }
+
     if (result.finalResult && result.confidence > 0.5) {
       Timer(Duration(milliseconds: 500), () {
         if (_isListening) {
@@ -258,11 +336,10 @@ class VoiceAssistantService extends ChangeNotifier {
   // Handle sound level changes (for visualization)
   void _onSoundLevelChange(double level) {
     // You can use this for voice wave visualization
-    // The level ranges from 0.0 to 1.0
     print('Sound level: $level');
   }
 
-  // Process voice command using Gemini AI
+  // Process voice command using Gemini AI with personality context
   Future<void> _processVoiceCommand(String command) async {
     if (command.trim().isEmpty) return;
 
@@ -273,8 +350,8 @@ class VoiceAssistantService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Send to Gemini AI or use fallback
-      final response = await _sendToGemini(command);
+      // Send to Gemini AI with personality context
+      final response = await _sendToGeminiWithPersonality(command);
 
       if (response != null && response.isNotEmpty) {
         _currentResponse = response;
@@ -282,48 +359,47 @@ class VoiceAssistantService extends ChangeNotifier {
 
         print('AI Response: $response');
 
-        // Speak the response
+        // Speak the response with current personality
         await _speakResponse(response);
       } else {
-        await _speakResponse('I\'m sorry, I couldn\'t process that request.');
+        await _speakResponse(_currentPersonality.getResponseForContext('error'));
       }
     } catch (e) {
       print('Error processing voice command: $e');
-      await _speakResponse('I encountered an error processing your request.');
+      await _speakResponse(_currentPersonality.getResponseForContext('error'));
     } finally {
       _isProcessing = false;
       notifyListeners();
     }
   }
 
-  // Send command to Gemini AI - FIXED VERSION
-  Future<String?> _sendToGemini(String prompt) async {
-    // Check if API key is set to placeholder value
-    if (_geminiApiKey == 'YOUR_ACTUAL_GEMINI_API_KEY_HERE' || _geminiApiKey.isEmpty) {
+  // Send command to Gemini AI with personality context
+  Future<String?> _sendToGeminiWithPersonality(String prompt) async {
+    if (_geminiApiKey == 'zaSyAttKUwx_e82ExDmyIHVgK_YZM_ayjS52c' || _geminiApiKey.isEmpty) {
       print('Using fallback responses (Please set your actual Gemini API key)');
-      return _getFallbackResponse(prompt);
+      return _getFallbackResponseWithPersonality(prompt);
     }
 
     try {
-      print('Sending request to Gemini AI...');
+      print('Sending request to Gemini AI with personality context...');
 
-      // Enhanced prompt with context about BBBD app
+      // Enhanced prompt with personality and assistant context
+      final personalityInfo = _currentPersonality.info;
       final enhancedPrompt = '''
-You are BBBD Assistant, a helpful voice assistant for the BBBD app (Building Barriers. Building Dreams).
+You are $_assistantName, an AI life coach with a ${personalityInfo.name} personality.
 
-BBBD is a productivity and communication app with the following features:
-- Home dashboard with reminders and daily usage analytics
-- Calendar integration with Google Calendar for events and tasks
-- Community features with group chats and personal messaging
-- Voice assistant (you) for hands-free interaction
+Your personality traits:
+- Name: ${personalityInfo.name} (${personalityInfo.emoji})
+- Style: ${personalityInfo.description}
+- Communication: ${personalityInfo.responseStyles['greeting']}
+
+IMPORTANT: Always respond in character as ${personalityInfo.name}. Match the tone, energy level, and communication style described above.
+
+Context: You're helping someone overcome challenges and build better habits. The user's primary challenge is their personal growth journey.
 
 User's voice command: "$prompt"
 
-Please provide a helpful, concise response (max 50 words) that:
-1. Addresses their request directly
-2. Uses context about BBBD app features when relevant
-3. Speaks in a friendly, conversational tone
-4. Suggests specific actions they can take in the app if applicable
+Respond as $_assistantName with your ${personalityInfo.name} personality. Keep responses conversational, supportive, and under 50 words. Use the speaking style and energy level that matches your personality.
 
 Response:''';
 
@@ -336,7 +412,7 @@ Response:''';
           },
         ],
         'generationConfig': {
-          'temperature': 0.7,
+          'temperature': 0.8,
           'topK': 40,
           'topP': 0.95,
           'maxOutputTokens': 150,
@@ -370,18 +446,16 @@ Response:''';
             },
             body: json.encode(requestBody),
           )
-          .timeout(Duration(seconds: 15)); // Increased timeout
+          .timeout(Duration(seconds: 15));
 
       print('Gemini API response status: ${response.statusCode}');
-      print('Gemini API response body: ${response.body}');
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         
-        // Check for errors in response
         if (data['error'] != null) {
           print('Gemini API error: ${data['error']}');
-          return _getFallbackResponse(prompt);
+          return _getFallbackResponseWithPersonality(prompt);
         }
 
         final candidates = data['candidates'] as List?;
@@ -389,77 +463,60 @@ Response:''';
         if (candidates != null && candidates.isNotEmpty) {
           final candidate = candidates[0];
           
-          // Check if candidate was blocked
           if (candidate['finishReason'] == 'SAFETY') {
             print('Response blocked by safety filters');
-            return _getFallbackResponse(prompt);
+            return _getFallbackResponseWithPersonality(prompt);
           }
 
           final parts = candidate['content']['parts'] as List?;
           if (parts != null && parts.isNotEmpty) {
             final aiResponse = parts[0]['text']?.toString().trim();
             if (aiResponse != null && aiResponse.isNotEmpty) {
-              print('Gemini AI response received successfully: $aiResponse');
+              print('Gemini AI response received: $aiResponse');
               return aiResponse;
             }
           }
         }
       } else {
         print('Gemini API HTTP error: ${response.statusCode}');
-        print('Response body: ${response.body}');
-        
-        // Parse error for better debugging
-        try {
-          final errorData = json.decode(response.body);
-          if (errorData['error'] != null) {
-            print('API Error details: ${errorData['error']}');
-          }
-        } catch (e) {
-          print('Could not parse error response: $e');
-        }
       }
     } catch (e) {
       print('Exception calling Gemini API: $e');
-      
-      // More specific error handling
-      if (e is TimeoutException) {
-        print('Request timed out - using fallback');
-      } else if (e is SocketException) {
-        print('Network error - using fallback');
-      } else {
-        print('Other error: ${e.runtimeType} - using fallback');
+    }
+
+    return _getFallbackResponseWithPersonality(prompt);
+  }
+
+  // Fallback responses with personality
+  String _getFallbackResponseWithPersonality(String prompt) {
+    final lowerPrompt = prompt.toLowerCase();
+
+    // Check for specific topics first
+    if (lowerPrompt.contains('calendar') || lowerPrompt.contains('schedule')) {
+      switch (_currentPersonality) {
+        case AssistantPersonality.toughLove:
+          return 'Stop procrastinating. Check your Calendar tab and plan your day properly.';
+        case AssistantPersonality.supportiveFriend:
+          return 'I\'d love to help you with your schedule! Check the Calendar tab to see what\'s coming up.';
+        case AssistantPersonality.motivationalCoach:
+          return 'TIME to ORGANIZE and DOMINATE your schedule! Hit that Calendar tab!';
+        case AssistantPersonality.wiseMentor:
+          return 'Time is your most valuable resource. Review your Calendar tab to use it wisely.';
+        case AssistantPersonality.cheerfulCompanion:
+          return 'Let\'s get organized! Pop over to the Calendar tab and see what awesome things you have planned!';
       }
     }
 
-    print('Falling back to local responses');
-    return _getFallbackResponse(prompt);
-  }
-
-  // Fallback responses when Gemini AI is not available
-  String _getFallbackResponse(String prompt) {
-    final lowerPrompt = prompt.toLowerCase();
-
-    if (lowerPrompt.contains('calendar') || lowerPrompt.contains('schedule')) {
-      return 'I can help you check your calendar! Go to the Calendar tab to view your events and add new ones.';
-    } else if (lowerPrompt.contains('reminder') || lowerPrompt.contains('remind')) {
-      return 'I\'ll help you create a reminder! You can add reminders from the Home screen or Calendar tab.';
-    } else if (lowerPrompt.contains('message') || lowerPrompt.contains('chat')) {
-      return 'You can send messages in the Community tab! Check your groups and personal chats there.';
-    } else if (lowerPrompt.contains('notification')) {
-      return 'Check the Community tab for your latest notifications and messages from groups and friends.';
-    } else if (lowerPrompt.contains('weather')) {
-      return 'I can\'t check weather directly, but you can ask me about your calendar, reminders, or app features!';
-    } else if (lowerPrompt.contains('hello') || lowerPrompt.contains('hi')) {
-      return 'Hello! I\'m your BBBD assistant. I can help you with calendar events, reminders, and messages. What would you like to do?';
-    } else if (lowerPrompt.contains('help')) {
-      return 'I can help you with calendar management, creating reminders, sending messages, and navigating the app. Just ask me naturally!';
-    } else if (lowerPrompt.contains('task') || lowerPrompt.contains('todo')) {
-      return 'You can create tasks and todos in the Calendar section. I\'ll help you stay organized!';
-    } else if (lowerPrompt.contains('meeting')) {
-      return 'For meetings, check your Calendar tab. You can view, create, and manage all your meetings there.';
-    } else {
-      return 'I\'m here to help! Try asking me about your calendar, creating reminders, or sending messages in the app.';
+    if (lowerPrompt.contains('motivation') || lowerPrompt.contains('help')) {
+      return _currentPersonality.getMotivationalPhrase();
     }
+
+    if (lowerPrompt.contains('hello') || lowerPrompt.contains('hi')) {
+      return _currentPersonality.getResponseForContext('greeting');
+    }
+
+    // Default response based on personality
+    return _currentPersonality.getResponseForContext('greeting');
   }
 
   // Speak the AI response using Text-to-Speech
@@ -472,7 +529,7 @@ Response:''';
       // Stop any current speech
       await _flutterTts.stop();
 
-      // Speak the text
+      // Speak the text with current personality settings
       await _flutterTts.speak(text);
 
     } catch (e) {
@@ -523,45 +580,7 @@ Response:''';
     notifyListeners();
   }
 
-  // Get available languages
-  Future<List<String>> getAvailableLanguages() async {
-    try {
-      final languages = await _flutterTts.getLanguages;
-      return languages.cast<String>();
-    } catch (e) {
-      print('Error getting available languages: $e');
-      // Return default languages
-      return [
-        'en-US',
-        'en-GB',
-        'es-ES',
-        'fr-FR',
-        'de-DE',
-        'it-IT',
-        'pt-BR',
-        'ja-JP',
-        'ko-KR',
-        'zh-CN',
-        'hi-IN',
-        'ar-SA',
-        'ru-RU',
-      ];
-    }
-  }
-
-  // Get available speech-to-text locales
-  Future<List<stt.LocaleName>> getAvailableLocales() async {
-    if (!_speechEnabled) return [];
-    
-    try {
-      return await _speech.locales();
-    } catch (e) {
-      print('Error getting available locales: $e');
-      return [];
-    }
-  }
-
-  // Quick actions for common commands
+  // Quick actions with personality
   Future<void> processQuickAction(String action) async {
     print('Processing quick action: $action');
 
@@ -569,24 +588,16 @@ Response:''';
 
     switch (action.toLowerCase()) {
       case 'ideas':
-        response =
-            'Here are some things you can try: "Add a reminder", "Check my calendar", "Send a message", or "What\'s my schedule today?"';
+        response = _currentPersonality.getMotivationalPhrase();
         break;
       case 'help':
-        response =
-            'I can help you with reminders, calendar events, messages, and general questions. Just speak naturally and I\'ll do my best to assist!';
+        response = _currentPersonality.getResponseForContext('greeting');
         break;
       case 'settings':
-        response =
-            'You can adjust my voice settings, speech rate, and language preferences in the voice settings menu.';
-        break;
-      case 'history':
-        response =
-            'Your recent voice commands are saved locally. You can view them in the voice history section.';
+        response = 'You can adjust my settings in the voice menu. What would you like to change?';
         break;
       default:
-        response =
-            'I\'m here to help! Try asking me about your calendar, reminders, or any questions you have.';
+        response = _currentPersonality.getCheckInPhrase();
     }
 
     _currentResponse = response;
@@ -594,15 +605,13 @@ Response:''';
     await _speakResponse(response);
   }
 
-  // Test voice output
+  // Test voice output with current personality
   Future<void> testVoice() async {
-    print('Testing voice output...');
-    await _speakResponse(
-      'Hello! I\'m your BBBD voice assistant. How can I help you today?',
-    );
+    print('Testing voice output with ${_currentPersonality.info.name} personality...');
+    await _speakResponse(_currentPersonality.info.samplePhrase);
   }
 
-  // Direct command processing (for quick action buttons)
+  // Direct command processing
   Future<void> processDirectCommand(String command) async {
     print('Processing direct command: $command');
     _lastWords = command;
@@ -620,12 +629,6 @@ Response:''';
     print('Voice session cleared');
   }
 
-  // Check if speech recognition is available
-  Future<bool> checkSpeechAvailability() async {
-    if (!_isInitialized) return false;
-    return await _speech.hasPermission;
-  }
-
   // Get current status for debugging
   Map<String, dynamic> getStatus() {
     return {
@@ -641,6 +644,9 @@ Response:''';
       'speechVolume': _speechVolume,
       'speechPitch': _speechPitch,
       'speechLanguage': _speechLanguage,
+      'personality': _currentPersonality.info.name,
+      'assistantName': _assistantName,
+      'wakeWord': _wakeWord,
     };
   }
 

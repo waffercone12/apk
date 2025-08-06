@@ -1,15 +1,17 @@
-// File: lib/main.dart
+// File: lib/main.dart (Updated)
+import 'package:BBBD/models/assistant_personality.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
 import 'screens/login_screen.dart';
-import 'screens/signup_screen.dart';
+import 'screens/voice_onboarding_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/calendar_screen.dart';
 import 'screens/community_screen.dart';
 import 'services/auth_service.dart';
 import 'services/voice_assistant_service.dart';
+import 'services/user_profile_service.dart';
 import 'theme/default_theme.dart';
 import 'widgets/nav_bar.dart';
 
@@ -28,6 +30,7 @@ class MyApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AuthService()),
         ChangeNotifierProvider(create: (_) => VoiceAssistantService()),
+        ChangeNotifierProvider(create: (_) => UserProfileService()),
       ],
       child: MaterialApp(
         title: 'BBBD - Building Barriers. Building Dreams.',
@@ -37,7 +40,7 @@ class MyApp extends StatelessWidget {
         home: AuthWrapper(),
         routes: {
           '/login': (context) => LoginScreen(),
-          '/signup': (context) => SignupScreen(),
+          '/onboarding': (context) => VoiceOnboardingScreen(),
           '/home': (context) => MainScreen(),
           '/calendar': (context) => CalendarScreen(),
         },
@@ -56,72 +59,219 @@ class AuthWrapper extends StatelessWidget {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return Scaffold(
-            backgroundColor: AppTheme.getBackgroundColor(context),
-            body: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // App Logo
-                  Container(
-                    width: 120,
-                    height: 120,
-                    decoration: AppTheme.getLogoContainerDecoration(context),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(AppTheme.circularRadius),
-                      child: Image.asset(
-                        'assets/app_icon/logo.png',
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) {
-                          return Icon(
-                            Icons.mic_rounded,
-                            size: 60,
-                            color: AppTheme.microphoneColor,
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-                  SizedBox(height: AppTheme.largeSpacing),
-                  
-                  // App Title
-                  Text(
-                    'BBBD',
-                    style: AppTheme.getLogoTextStyle(context),
-                  ),
-                  SizedBox(height: AppTheme.smallSpacing),
-                  
-                  // Subtitle
-                  Text(
-                    'Building Barriers. Building Dreams.',
-                    style: AppTheme.subtitleTextStyle,
-                    textAlign: TextAlign.center,
-                  ),
-                  SizedBox(height: AppTheme.extraLargeSpacing),
-                  
-                  // Loading indicator
-                  CircularProgressIndicator(
-                    color: AppTheme.getPrimaryColor(context),
-                    strokeWidth: 3,
-                  ),
-                  SizedBox(height: AppTheme.mediumSpacing),
-                  
-                  Text(
-                    'Initializing Voice Assistant...',
-                    style: AppTheme.subtitleTextStyle,
-                  ),
-                ],
-              ),
-            ),
-          );
+          return _buildLoadingScreen(context);
         }
 
         if (snapshot.hasData) {
-          return MainScreen();
+          // User is authenticated, check onboarding status
+          return OnboardingChecker();
         }
 
+        // User not authenticated, show login
         return LoginScreen();
       },
+    );
+  }
+
+  Widget _buildLoadingScreen(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // App Logo
+            Container(
+              width: 120,
+              height: 120,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Colors.white, Colors.grey[300]!],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(60),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(60),
+                child: Image.asset(
+                  'assets/app_icon/logo.png',
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) {
+                    return Icon(
+                      Icons.mic_rounded,
+                      size: 60,
+                      color: Colors.black,
+                    );
+                  },
+                ),
+              ),
+            ),
+            SizedBox(height: AppTheme.largeSpacing),
+            
+            // App Title
+            Text(
+              'BBBD',
+              style: TextStyle(
+                fontSize: 36,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            SizedBox(height: AppTheme.smallSpacing),
+            
+            // Subtitle
+            Text(
+              'Building Barriers. Building Dreams.',
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.grey[400],
+              ),
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(height: AppTheme.extraLargeSpacing),
+            
+            // Loading indicator
+            CircularProgressIndicator(
+              color: Colors.white,
+              strokeWidth: 3,
+            ),
+            SizedBox(height: AppTheme.mediumSpacing),
+            
+            Text(
+              'Initializing AI Coach...',
+              style: TextStyle(
+                color: Colors.grey[400],
+                fontSize: 16,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class OnboardingChecker extends StatefulWidget {
+  const OnboardingChecker({super.key});
+
+  @override
+  _OnboardingCheckerState createState() => _OnboardingCheckerState();
+}
+
+class _OnboardingCheckerState extends State<OnboardingChecker> {
+  bool _isChecking = true;
+  
+  @override
+  void initState() {
+    super.initState();
+    _checkOnboardingStatus();
+  }
+
+  Future<void> _checkOnboardingStatus() async {
+    try {
+      final userProfileService = Provider.of<UserProfileService>(context, listen: false);
+      final hasCompleted = await userProfileService.checkUserOnboardingStatus();
+      
+      if (mounted) {
+        setState(() {
+          _isChecking = false;
+        });
+        
+        // Navigate based on onboarding status
+        await Future.delayed(Duration(milliseconds: 500)); // Small delay for smooth transition
+        
+        if (hasCompleted) {
+          // Load user's assistant personality and settings
+          final profile = userProfileService.currentProfile;
+          if (profile != null) {
+            final voiceService = Provider.of<VoiceAssistantService>(context, listen: false);
+            voiceService.setPersonality(profile.personality);
+            voiceService.setWakeWord(profile.assistantName);
+          }
+          
+          if (mounted) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => MainScreen()),
+            );
+          }
+        } else {
+          if (mounted) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => VoiceOnboardingScreen()),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      print('Error checking onboarding status: $e');
+      if (mounted) {
+        setState(() {
+          _isChecking = false;
+        });
+        
+        // Default to onboarding screen on error
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => VoiceOnboardingScreen()),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isChecking) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.white, Colors.grey[300]!],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(40),
+                ),
+                child: Icon(
+                  Icons.mic_rounded,
+                  size: 40,
+                  color: Colors.black,
+                ),
+              ),
+              SizedBox(height: AppTheme.largeSpacing),
+              CircularProgressIndicator(
+                color: Colors.white,
+                strokeWidth: 3,
+              ),
+              SizedBox(height: AppTheme.mediumSpacing),
+              Text(
+                'Setting up your AI coach...',
+                style: TextStyle(
+                  color: Colors.grey[400],
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    
+    // This should not be reached, but return loading screen as fallback
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      ),
     );
   }
 }
@@ -145,13 +295,6 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     MenuScreen(),
   ];
 
-  final List<String> _screenTitles = [
-    'Home',
-    'Calendar',
-    'Community',
-    'Menu',
-  ];
-
   @override
   void initState() {
     super.initState();
@@ -163,6 +306,9 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     
     // Initialize voice assistant when main screen loads
     _initializeVoiceAssistant();
+    
+    // Update user's last active timestamp
+    _updateLastActive();
   }
 
   Future<void> _initializeVoiceAssistant() async {
@@ -170,15 +316,23 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
       final voiceService = Provider.of<VoiceAssistantService>(context, listen: false);
       await voiceService.initialize();
       
+      // Load user's personality settings
+      final userProfileService = Provider.of<UserProfileService>(context, listen: false);
+      final profile = userProfileService.currentProfile;
+      
+      if (profile != null) {
+        voiceService.setPersonality(profile.personality);
+        voiceService.setWakeWord(profile.assistantName);
+      }
+      
       if (mounted) {
-        // Show a subtle notification that voice assistant is ready
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Row(
               children: [
                 Icon(Icons.mic, color: Colors.white, size: 16),
                 SizedBox(width: 8),
-                Text('Voice Assistant Ready! 🎤'),
+                Text('${profile?.assistantName ?? 'AI Coach'} is ready! 🎤'),
               ],
             ),
             backgroundColor: Colors.green,
@@ -209,6 +363,15 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
           ),
         );
       }
+    }
+  }
+
+  Future<void> _updateLastActive() async {
+    try {
+      final userProfileService = Provider.of<UserProfileService>(context, listen: false);
+      await userProfileService.updateLastActive();
+    } catch (e) {
+      print('Error updating last active: $e');
     }
   }
 
@@ -252,7 +415,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
   }
 }
 
-// Enhanced Menu Screen with Voice Settings
+// Enhanced Menu Screen with Profile Management
 class MenuScreen extends StatefulWidget {
   const MenuScreen({super.key});
 
@@ -287,7 +450,6 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
         ),
         centerTitle: true,
         actions: [
-          // Voice Assistant Quick Access
           Consumer<VoiceAssistantService>(
             builder: (context, voiceService, child) {
               return IconButton(
@@ -308,95 +470,95 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
       ),
       body: FadeTransition(
         opacity: _fadeAnimation,
-        child: SingleChildScrollView(
-          padding: EdgeInsets.all(AppTheme.largeSpacing),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Profile Section
-              _buildProfileSection(),
-              SizedBox(height: AppTheme.largeSpacing),
+        child: Consumer2<UserProfileService, VoiceAssistantService>(
+          builder: (context, profileService, voiceService, child) {
+            final profile = profileService.currentProfile;
+            
+            return SingleChildScrollView(
+              padding: EdgeInsets.all(AppTheme.largeSpacing),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Profile Section
+                  _buildProfileSection(profile),
+                  SizedBox(height: AppTheme.largeSpacing),
 
-              // Voice Assistant Status
-              _buildVoiceAssistantStatus(),
-              SizedBox(height: AppTheme.largeSpacing),
+                  // AI Assistant Status
+                  _buildAIAssistantStatus(profile, voiceService),
+                  SizedBox(height: AppTheme.largeSpacing),
 
-              // Menu Items
-              _buildMenuSection('General', [
-                MenuItemData(
-                  icon: Icons.person_outline,
-                  title: 'Profile Settings',
-                  subtitle: 'Manage your account',
-                  onTap: () => _showProfileSettings(),
-                ),
-                MenuItemData(
-                  icon: Icons.notifications,
-                  title: 'Notifications',
-                  subtitle: 'Configure alerts and reminders',
-                  onTap: () => _showNotificationSettings(),
-                ),
-                MenuItemData(
-                  icon: Icons.privacy_tip_outlined,
-                  title: 'Privacy & Security',
-                  subtitle: 'Manage your privacy settings',
-                  onTap: () => _showPrivacySettings(),
-                ),
-              ]),
+                  // Menu Items
+                  _buildMenuSection('AI Coach', [
+                    MenuItemData(
+                      icon: Icons.psychology,
+                      title: 'Change Personality',
+                      subtitle: 'Switch ${profile?.assistantName ?? 'AI'} personality style',
+                      onTap: () => _showPersonalitySettings(profile, voiceService),
+                    ),
+                    MenuItemData(
+                      icon: Icons.drive_file_rename_outline,
+                      title: 'Rename Assistant',
+                      subtitle: 'Change your AI coach\'s name',
+                      onTap: () => _showRenameAssistant(profile, voiceService),
+                    ),
+                    MenuItemData(
+                      icon: Icons.mic_outlined,
+                      title: 'Voice Settings',
+                      subtitle: 'Adjust speech and recognition',
+                      onTap: () => _showVoiceSettings(),
+                    ),
+                  ]),
 
-              _buildMenuSection('Voice & AI', [
-                MenuItemData(
-                  icon: Icons.mic_outlined,
-                  title: 'Voice Settings',
-                  subtitle: 'Adjust voice recognition and speech',
-                  onTap: () => _showVoiceSettings(),
-                ),
-                MenuItemData(
-                  icon: Icons.smart_toy_outlined,
-                  title: 'AI Preferences',
-                  subtitle: 'Customize Gemini AI behavior',
-                  onTap: () => _showAISettings(),
-                ),
-                MenuItemData(
-                  icon: Icons.history,
-                  title: 'Voice History',
-                  subtitle: 'View past conversations',
-                  onTap: () => _showVoiceHistory(),
-                ),
-              ]),
+                  _buildMenuSection('Progress', [
+                    MenuItemData(
+                      icon: Icons.trending_up,
+                      title: 'My Progress',
+                      subtitle: 'View your growth journey',
+                      onTap: () => _showProgress(profileService),
+                    ),
+                    MenuItemData(
+                      icon: Icons.local_fire_department,
+                      title: 'Streak & Goals',
+                      subtitle: 'Track daily consistency',
+                      onTap: () => _showStreakGoals(profile),
+                    ),
+                  ]),
 
-              _buildMenuSection('Support', [
-                MenuItemData(
-                  icon: Icons.help_outline,
-                  title: 'Help & Support',
-                  subtitle: 'Get help and contact us',
-                  onTap: () => _showHelpSupport(),
-                ),
-                MenuItemData(
-                  icon: Icons.feedback_outlined,
-                  title: 'Send Feedback',
-                  subtitle: 'Help us improve the app',
-                  onTap: () => _showFeedback(),
-                ),
-                MenuItemData(
-                  icon: Icons.info_outline,
-                  title: 'About BBBD',
-                  subtitle: 'Version 1.0.0',
-                  onTap: () => _showAbout(),
-                ),
-              ]),
+                  _buildMenuSection('General', [
+                    MenuItemData(
+                      icon: Icons.person_outline,
+                      title: 'Profile Settings',
+                      subtitle: 'Manage your account',
+                      onTap: () => _showProfileSettings(),
+                    ),
+                    MenuItemData(
+                      icon: Icons.notifications,
+                      title: 'Notifications',
+                      subtitle: 'Configure alerts and reminders',
+                      onTap: () => _showNotificationSettings(),
+                    ),
+                    MenuItemData(
+                      icon: Icons.help_outline,
+                      title: 'Help & Support',
+                      subtitle: 'Get help and contact us',
+                      onTap: () => _showHelpSupport(),
+                    ),
+                  ]),
 
-              SizedBox(height: AppTheme.largeSpacing),
+                  SizedBox(height: AppTheme.largeSpacing),
 
-              // Sign Out Button
-              _buildSignOutButton(),
-            ],
-          ),
+                  // Sign Out Button
+                  _buildSignOutButton(),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
   }
 
-  Widget _buildProfileSection() {
+  Widget _buildProfileSection(UserProfile? profile) {
     return AppTheme.buildThemedCard(
       context: context,
       child: Consumer<AuthService>(
@@ -435,7 +597,7 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      user?.displayName ?? 'User',
+                      profile?.name ?? user?.displayName ?? 'User',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.bold,
                         color: AppTheme.getTextColor(context),
@@ -445,6 +607,24 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
                       user?.email ?? 'user@example.com',
                       style: AppTheme.subtitleTextStyle,
                     ),
+                    if (profile?.primaryChallenge != null) ...[
+                      SizedBox(height: 4),
+                      Container(
+                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppTheme.getPrimaryColor(context).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          'Focus: ${profile!.primaryChallenge}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.getPrimaryColor(context),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -462,92 +642,113 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildVoiceAssistantStatus() {
-    return Consumer<VoiceAssistantService>(
-      builder: (context, voiceService, child) {
-        return AppTheme.buildThemedCard(
-          context: context,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildAIAssistantStatus(UserProfile? profile, VoiceAssistantService voiceService) {
+    final assistantName = profile?.assistantName ?? 'AI Coach';
+    final personality = profile?.personality ?? AssistantPersonality.supportiveFriend;
+    
+    return AppTheme.buildThemedCard(
+      context: context,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.mic,
-                    color: voiceService.isInitialized 
-                        ? Colors.green 
-                        : Colors.orange,
-                    size: 24,
-                  ),
-                  SizedBox(width: AppTheme.smallSpacing),
-                  Text(
-                    'Voice Assistant',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.getTextColor(context),
+              Text(
+                personality.info.emoji,
+                style: TextStyle(fontSize: 24),
+              ),
+              SizedBox(width: AppTheme.smallSpacing),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      assistantName,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.getTextColor(context),
+                      ),
                     ),
-                  ),
-                  Spacer(),
-                  Container(
-                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: voiceService.isInitialized 
-                          ? Colors.green.withOpacity(0.1)
-                          : Colors.orange.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
+                    Text(
+                      '${personality.info.name} personality',
+                      style: AppTheme.subtitleTextStyle,
                     ),
-                    child: Text(
-                      voiceService.isInitialized ? 'ACTIVE' : 'INITIALIZING',
+                  ],
+                ),
+              ),
+              Container(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: voiceService.isInitialized 
+                      ? Colors.green.withOpacity(0.1)
+                      : Colors.grey.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      voiceService.isInitialized ? Icons.check_circle : Icons.pending,
+                      size: 12,
+                      color: voiceService.isInitialized ? Colors.green : Colors.grey,
+                    ),
+                    SizedBox(width: 4),
+                    Text(
+                      voiceService.isInitialized ? 'READY' : 'LOADING',
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.bold,
-                        color: voiceService.isInitialized ? Colors.green : Colors.orange,
+                        color: voiceService.isInitialized ? Colors.green : Colors.grey,
                       ),
                     ),
-                  ),
-                ],
-              ),
-              SizedBox(height: AppTheme.smallSpacing),
-              Text(
-                voiceService.isInitialized 
-                    ? 'Ready to assist you with voice commands'
-                    : 'Setting up speech recognition...',
-                style: AppTheme.subtitleTextStyle,
-              ),
-              SizedBox(height: AppTheme.mediumSpacing),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () => voiceService.testVoice(),
-                      icon: Icon(Icons.play_arrow, size: 16),
-                      label: Text('Test Voice'),
-                      style: AppTheme.getPrimaryButtonStyle(context).copyWith(
-                        padding: WidgetStateProperty.all(
-                          EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-                        ),
-                      ),
-                    ),
-                  ),
-                  SizedBox(width: AppTheme.smallSpacing),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () => _showVoiceSettings(),
-                      icon: Icon(Icons.settings, size: 16),
-                      label: Text('Settings'),
-                      style: AppTheme.getSecondaryButtonStyle(context).copyWith(
-                        padding: WidgetStateProperty.all(
-                          EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ],
           ),
-        );
-      },
+          SizedBox(height: AppTheme.mediumSpacing),
+          
+          // Wake word display
+          Container(
+            padding: EdgeInsets.all(AppTheme.smallSpacing),
+            decoration: BoxDecoration(
+              color: AppTheme.getBackgroundColor(context),
+              borderRadius: BorderRadius.circular(AppTheme.smallRadius),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.record_voice_over, size: 16, color: AppTheme.getIconColor(context)),
+                SizedBox(width: AppTheme.smallSpacing),
+                Text(
+                  'Say "Hey $assistantName" to wake up',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: AppTheme.getSubtitleColor(context),
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          SizedBox(height: AppTheme.mediumSpacing),
+          
+          // Quick test button
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: voiceService.isInitialized ? () => voiceService.testVoice() : null,
+              icon: Icon(Icons.play_arrow, size: 16),
+              label: Text('Test Voice'),
+              style: AppTheme.getPrimaryButtonStyle(context).copyWith(
+                padding: WidgetStateProperty.all(
+                  EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -614,7 +815,10 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
           final confirmed = await _showSignOutConfirmation();
           if (confirmed == true) {
             final authService = Provider.of<AuthService>(context, listen: false);
+            final profileService = Provider.of<UserProfileService>(context, listen: false);
+            
             await authService.signOut();
+            profileService.clearProfile();
           }
         },
         icon: Icon(Icons.logout, color: Colors.red),
@@ -627,88 +831,52 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
     );
   }
 
-  // Action Methods
+  // Action methods
   void _quickVoiceAction(VoiceAssistantService voiceService) async {
     await voiceService.processQuickAction('help');
   }
 
-  void _showVoiceSettings() {
+  void _showPersonalitySettings(UserProfile? profile, VoiceAssistantService voiceService) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => VoiceSettingsDialog(),
+      builder: (context) => PersonalitySettingsDialog(
+        currentPersonality: profile?.personality ?? AssistantPersonality.supportiveFriend,
+        onPersonalityChanged: (personality) async {
+          voiceService.setPersonality(personality);
+          
+          final profileService = Provider.of<UserProfileService>(context, listen: false);
+          await profileService.updateAssistantSettings(personality: personality);
+          
+          // Test the new personality
+          voiceService.testVoice();
+        },
+      ),
     );
   }
 
-  void _showProfileSettings() {
-    _showComingSoon('Profile Settings');
-  }
-
-  void _showNotificationSettings() {
-    _showComingSoon('Notification Settings');
-  }
-
-  void _showPrivacySettings() {
-    _showComingSoon('Privacy Settings');
-  }
-
-  void _showAISettings() {
-    _showComingSoon('AI Preferences');
-  }
-
-  void _showVoiceHistory() {
-    _showComingSoon('Voice History');
-  }
-
-  void _showHelpSupport() {
-    _showComingSoon('Help & Support');
-  }
-
-  void _showFeedback() {
-    _showComingSoon('Send Feedback');
-  }
-
-  void _showAbout() {
+  void _showRenameAssistant(UserProfile? profile, VoiceAssistantService voiceService) {
+    final controller = TextEditingController(text: profile?.assistantName ?? '');
+    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: AppTheme.getPrimaryColor(context),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Icon(
-                Icons.mic,
-                color: Colors.white,
-                size: 20,
-              ),
-            ),
-            SizedBox(width: AppTheme.mediumSpacing),
-            Text('About BBBD'),
-          ],
-        ),
+        title: Text('Rename Your AI Coach'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Building Barriers. Building Dreams.',
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 16,
+            TextField(
+              controller: controller,
+              decoration: InputDecoration(
+                labelText: 'Assistant Name',
+                hintText: 'Enter a new name...',
+                prefixIcon: Icon(Icons.person),
               ),
             ),
-            SizedBox(height: AppTheme.mediumSpacing),
-            Text('Version: 1.0.0'),
-            Text('Build: 1 (Voice Assistant Enabled)'),
-            SizedBox(height: AppTheme.mediumSpacing),
+            SizedBox(height: 16),
             Text(
-              'A comprehensive productivity and communication app with AI-powered voice assistant.',
+              'You\'ll say "Hey [Name]" to wake up your coach',
               style: AppTheme.subtitleTextStyle,
             ),
           ],
@@ -716,20 +884,63 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
+            child: Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newName = controller.text.trim();
+              if (newName.isNotEmpty) {
+                voiceService.setWakeWord(newName);
+                
+                final profileService = Provider.of<UserProfileService>(context, listen: false);
+                await profileService.updateAssistantSettings(assistantName: newName);
+                
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Assistant renamed to $newName')),
+                );
+              }
+            },
+            child: Text('Save'),
           ),
         ],
       ),
     );
   }
 
-  void _showComingSoon(String feature) {
+  void _showVoiceSettings() {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('$feature coming soon! 🚀'),
-        backgroundColor: AppTheme.getPrimaryColor(context),
-        behavior: SnackBarBehavior.floating,
-      ),
+      SnackBar(content: Text('Voice settings coming soon!')),
+    );
+  }
+
+  void _showProgress(UserProfileService profileService) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Progress tracking coming soon!')),
+    );
+  }
+
+  void _showStreakGoals(UserProfile? profile) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Streak & Goals coming soon!')),
+    );
+  }
+
+  void _showProfileSettings() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Profile settings coming soon!')),
+    );
+  }
+
+  void _showNotificationSettings() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Notification settings coming soon!')),
+    );
+  }
+
+  void _showHelpSupport() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Help & Support coming soon!')),
     );
   }
 
@@ -761,14 +972,21 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
   }
 }
 
-// Voice Settings Dialog (Simple version)
-class VoiceSettingsDialog extends StatelessWidget {
-  const VoiceSettingsDialog({super.key});
+// Personality Settings Dialog
+class PersonalitySettingsDialog extends StatelessWidget {
+  final AssistantPersonality currentPersonality;
+  final Function(AssistantPersonality) onPersonalityChanged;
+
+  const PersonalitySettingsDialog({
+    super.key,
+    required this.currentPersonality,
+    required this.onPersonalityChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: MediaQuery.of(context).size.height * 0.6,
+      height: MediaQuery.of(context).size.height * 0.7,
       decoration: BoxDecoration(
         color: AppTheme.getSurfaceColor(context),
         borderRadius: BorderRadius.vertical(
@@ -792,7 +1010,7 @@ class VoiceSettingsDialog extends StatelessWidget {
           Padding(
             padding: EdgeInsets.all(AppTheme.largeSpacing),
             child: Text(
-              'Voice Settings',
+              'Choose Personality',
               style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                 fontWeight: FontWeight.bold,
                 color: AppTheme.getTextColor(context),
@@ -800,46 +1018,84 @@ class VoiceSettingsDialog extends StatelessWidget {
             ),
           ),
           
-          // Settings content
+          // Personalities list
           Expanded(
-            child: Padding(
+            child: ListView.builder(
               padding: EdgeInsets.symmetric(horizontal: AppTheme.largeSpacing),
-              child: Column(
-                children: [
-                  ListTile(
-                    leading: Icon(Icons.volume_up),
-                    title: Text('Speech Volume'),
-                    subtitle: Text('Adjust voice output level'),
-                    trailing: Text('80%'),
-                    onTap: () {},
-                  ),
-                  ListTile(
-                    leading: Icon(Icons.speed),
-                    title: Text('Speech Rate'),
-                    subtitle: Text('How fast the assistant speaks'),
-                    trailing: Text('Normal'),
-                    onTap: () {},
-                  ),
-                  ListTile(
-                    leading: Icon(Icons.language),
-                    title: Text('Language'),
-                    subtitle: Text('Voice recognition language'),
-                    trailing: Text('English (US)'),
-                    onTap: () {},
-                  ),
-                  SizedBox(height: AppTheme.largeSpacing),
-                  Consumer<VoiceAssistantService>(
-                    builder: (context, voiceService, child) {
-                      return ElevatedButton.icon(
-                        onPressed: () => voiceService.testVoice(),
-                        icon: Icon(Icons.play_arrow),
-                        label: Text('Test Voice'),
-                        style: AppTheme.getPrimaryButtonStyle(context),
-                      );
+              itemCount: AssistantPersonality.values.length,
+              itemBuilder: (context, index) {
+                final personality = AssistantPersonality.values[index];
+                final isSelected = personality == currentPersonality;
+                
+                return Container(
+                  margin: EdgeInsets.only(bottom: AppTheme.mediumSpacing),
+                  child: GestureDetector(
+                    onTap: () {
+                      onPersonalityChanged(personality);
+                      Navigator.pop(context);
                     },
+                    child: Container(
+                      padding: EdgeInsets.all(AppTheme.mediumSpacing),
+                      decoration: BoxDecoration(
+                        color: isSelected 
+                            ? AppTheme.getPrimaryColor(context).withOpacity(0.1)
+                            : AppTheme.getBackgroundColor(context),
+                        borderRadius: BorderRadius.circular(AppTheme.mediumRadius),
+                        border: Border.all(
+                          color: isSelected 
+                              ? AppTheme.getPrimaryColor(context)
+                              : AppTheme.getDividerColor(context),
+                          width: isSelected ? 2 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Text(
+                            personality.info.emoji,
+                            style: TextStyle(fontSize: 32),
+                          ),
+                          SizedBox(width: AppTheme.mediumSpacing),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  personality.info.name,
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppTheme.getTextColor(context),
+                                  ),
+                                ),
+                                SizedBox(height: 4),
+                                Text(
+                                  personality.info.description,
+                                  style: AppTheme.subtitleTextStyle,
+                                ),
+                                SizedBox(height: 8),
+                                Text(
+                                  '"${personality.info.samplePhrase}"',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontStyle: FontStyle.italic,
+                                    color: AppTheme.getSubtitleColor(context),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (isSelected)
+                            Icon(
+                              Icons.check_circle,
+                              color: AppTheme.getPrimaryColor(context),
+                              size: 24,
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
-                ],
-              ),
+                );
+              },
             ),
           ),
         ],
