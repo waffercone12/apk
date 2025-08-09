@@ -44,7 +44,7 @@ class _CommunityScreenState extends State<CommunityScreen>
   
   // Loading states
   bool _isLoading = true;
-  bool _isCreatingGroup = false;
+  final bool _isCreatingGroup = false;
   
   // Controllers
   final TextEditingController _searchController = TextEditingController();
@@ -1464,7 +1464,7 @@ class _CommunityScreenState extends State<CommunityScreen>
             Text('Start New Chat'),
           ],
         ),
-        content: Container(
+        content: SizedBox(
           width: double.maxFinite,
           height: 400,
           child: Column(
@@ -2029,7 +2029,7 @@ class _CommunityScreenState extends State<CommunityScreen>
             Text('Community Members'),
           ],
         ),
-        content: Container(
+        content: SizedBox(
           width: double.maxFinite,
           height: 400,
           child: _communityMembers.isEmpty
@@ -2483,7 +2483,7 @@ class _CommunityScreenState extends State<CommunityScreen>
       // Simple encoding (you can implement proper encryption here)
       final bytes = utf8.encode(message + _encryptionKey);
       final digest = sha256.convert(bytes);
-      return base64.encode(utf8.encode(message)) + ':' + digest.toString().substring(0, 8);
+      return '${base64.encode(utf8.encode(message))}:${digest.toString().substring(0, 8)}';
     } catch (e) {
       return message; // Fallback to plain text if encryption fails
     }

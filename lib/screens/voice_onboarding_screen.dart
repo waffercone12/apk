@@ -217,7 +217,7 @@ class _VoiceOnboardingScreenState extends State<VoiceOnboardingScreen>
               margin: EdgeInsets.only(bottom: AppTheme.mediumSpacing),
               child: _buildPersonalityCard(personality),
             );
-          }).toList(),
+          }),
         ],
       ),
     );
@@ -534,7 +534,7 @@ class _VoiceOnboardingScreenState extends State<VoiceOnboardingScreen>
                 ),
               ),
             );
-          }).toList(),
+          }),
           
           SizedBox(height: AppTheme.largeSpacing),
           

@@ -256,7 +256,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
   Widget _buildGoogleSignInButton() {
     return Consumer<AuthService>(
       builder: (context, authService, child) {
-        return Container(
+        return SizedBox(
           width: double.infinity,
           height: 56,
           child: ElevatedButton.icon(
